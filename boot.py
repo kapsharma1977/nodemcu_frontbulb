@@ -1,30 +1,30 @@
 # This file is executed on every boot (including wake-boot from deepsleep)
+#import esp
+#esp.osdebug(None)
 import os, machine
 #os.dupterm(None, 1) # disable REPL on UART(0)
 import gc
+#import webrepl
+#webrepl.start()
+
 import network
 import ntptime
 from machine import Pin, RTC # import RTC from machine
 import utime
-import time
+
 from time import sleep
 try:
   import usocket as socket
 except:
   import socket
 import network
-import esp
+import esp, ujson, uio, ubinascii
 from micropython import const
 
 # Wifi SSID and Password
-_SSID=const("Jiya")
-_PASS=const("9971989772")
-
-#_SSID=const("Jiya’s iPhone")
-#_PASS=const("9971989772")
-
-
-
+SSID="Jiya"
+PASS="9971989772"
+PASSFILE = 'paswd.json'
 
 # Time slice for sleep
 SLEEPSECONDS = const(0.5) #59
@@ -53,23 +53,49 @@ DATETIME_ELEMENTS = {
 #India is 5.30 hours ahead of GMT
 _GMTHOURINDIA = const(5)
 _GMTMINUTESINDIA = const(30)
-
+sunrise = {
+            "Jan":{'h':7,'m':0}
+            ,"Feb":{'h':6,'m':30}
+            ,"Mar":{'h':6,'m':30}
+            ,"Apr":{'h':6,'m':0}
+            ,"May":{'h':6,'m':0}
+            ,"Jun":{'h':5,'m':30}
+            ,"Jul":{'h':5,'m':30}
+            ,"Aug":{'h':5,'m':30}
+            ,"Sep":{'h':6,'m':0}
+            ,"Oct":{'h':6,'m':0}
+            ,"Nov":{'h':6,'m':30}
+            ,"Dec":{'h':7,'m':0}
+        }
+sunset = {
+            "Jan":{'h':17,'m':30}
+            ,"Feb":{'h':18,'m':0}
+            ,"Mar":{'h':18,'m':30}
+            ,"Apr":{'h':18,'m':30}
+            ,"May":{'h':19,'m':0}
+            ,"Jun":{'h':19,'m':0}
+            ,"Jul":{'h':19,'m':0}
+            ,"Aug":{'h':19,'m':0}
+            ,"Sep":{'h':18,'m':30}
+            ,"Oct":{'h':18,'m':0}
+            ,"Nov":{'h':17,'m':30}
+            ,"Dec":{'h':17,'m':30}
+        }
 # set an element of the RTC's datetime to a different value GMT +5:30
 def set_datetime_element(rtc, h=_GMTHOURINDIA, m=_GMTMINUTESINDIA): # India Calcuta GMT +5:30 
     date = list(rtc.datetime())
     date[DATETIME_ELEMENTS["hour"]] = date[DATETIME_ELEMENTS["hour"]] + h
     date[DATETIME_ELEMENTS["minute"]] = date[DATETIME_ELEMENTS["minute"]] + m
     rtc.datetime(date)
-    del date
 def wlanconnect(wlan):
     # wlan.config(dhcp_hostname="foo-bar-baz")
     wlan.active(True)
-    wlan.connect(_SSID, _PASS)
+    wlan.connect(SSID, PASS)
     # Note that this may take some time, so we need to wait
     # Wait 5 sec or until connected
     tmo = 50
     while not wlan.isconnected():
-        utime.sleep_ms(100)
+        utime.sleep_ms(300)
         tmo -= 1
         if tmo == 0:
             break
@@ -78,20 +104,27 @@ def wlanconnect(wlan):
         print("=== Station Connected to WiFi \n")
         config = wlan.ifconfig()
         print("IP:{0}, Network mask:{1}, Router:{2}, DNS: {3}".format(*config))
+        utime.sleep_ms(100)
         return True
     else:
         return False
-def initializeRTC(rtc):
+
+def initializeRTC():
     if wlan.isconnected():
         ntptime.settime() # set the RTC's time using ntptime # this queries the time from an NTP server
         return True
     else:
         return False
+def free(full=False):
+  gc.collect()
+  F = gc.mem_free()
+  A = gc.mem_alloc()
+  T = F+A
+  P = '{0:.2f}%'.format(F/T*100)
+  if not full: return P
+  else : return ('Total:{0} Free:{1} ({2})'.format(T,F,P))
 esp.osdebug(None)
-#import webrepl
-#webrepl.start()
 gc.collect()
-# initialize the RTC
 rtc = RTC()
 # Create Pins
 D1 = Pin(_D1GPIO5, Pin.OUT, value=1)
