@@ -1,0 +1,51 @@
+# Time slice for sleep
+SLEEPSECONDS = const(0.5) #59
+# pins 0, 2, 4, 5, 12, 13, 14, 15, and 16
+_D0GPIO16 = const(16) # doesn't support pull Pin.PULL_UP. OnBoard LED switch on after call off(). HIGH at boot, used to wake up from deep sleep
+_D1GPIO5 = const(5) # OK, often used as SCL (I2C)
+_D2GPIO4 = const(4) # OK, often used as SCL (I2C)
+_D3GPIO0 = const(0) # pulled up, connected to FLASH button, boot fails if pulled LOW
+_D4GPIO2 = const(2) # ONBOARDLED,pulled up, HIGH at boot, connected to on-board LED, boot fails if pulled LOW
+_D5GPIO2 = const(14) # OK, SPI (SCLK)
+_D6GPIO12 = const(12) # OK, SPI (MISO)
+_D7GPIO5 = const(13) # OK, SPI (MOSI)
+_D8GPIO12 = const(15) # pulled to GND, pulled to GND
+
+#print("led D1={0} D2={1}".format(D1.value(),D2.value()))
+#print(rtc.datetime())
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+# dictionary that maps string date names to indexes in the RTC's datetime tuple
+DATETIME_ELEMENTS = {
+    "year": 0,
+    "month": 1,
+    "day": 2,
+    "day_of_week": 3,
+    "hour": 4,
+    "minute": 5,
+    "second": 6,
+    "millisecond": 7
+}
+week = {"Mon":0, "Tue":0, "Wed":0, "Thu":0, "Fri":0, "Sat":0, "Sun":0}
+#print('GET Request Content = %s' % request)
+
+SSIDS = '/ssid'
+if request.find(SSIDS) == 6:
+                response = frontbulb.web_page_ssid(sleepfn = utime.sleep_ms,wlan = wlan)
+                utime.sleep_ms(100)
+web_page_ssid(self, sleepfn, wlan):
+        try:
+            h_b = """<body> <h1>ESP Web Server</h1>"""
+            ssids = wlan.scan()
+            sleepfn(950)
+            for x in ssids:
+                if x[5] == 0:
+                    h_b = h_b + "<p>ssid = <strong>%s</strong></p>" % (str(x[0], 'ascii'))
+            for x in ssids:
+                if x[5] == 1:
+                    h_b = h_b + "<p>ssid = %s</p>" % (str(x[0], 'ascii'))
+            return """<!DOCTYPE html><html><head> <title>Bulb ESP Web Server Wifi Scan</title>""" + bulb.html_style + h_b + "</body></html>"
+        except MemoryError as er:
+            print(f"MemoryError : {er}")
+            del h_b
+            return """<!DOCTYPE html><html><head> <title>Bulb ESP Web Server Wifi Scanr</title>""" + bulb.html_style + "<p>MemoryError</p>" + "</body></html>"
+        
