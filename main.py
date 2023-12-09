@@ -1,27 +1,15 @@
 from frontgateblub import bulb
 PASSWORD = '/password'
 EVENODDALL ='/evenodd'
-SSID=""
-PASS=""
 def wlandisconnect(fb):
     fb.relaysoff()
     utime.sleep_ms(200)
 def json_savetofile(fname,jsondata):
-    with open(fname, 'wt') as fd:
+    with open(fname, 'w') as fd:
         ujson.dump(jsondata, fd)
 def json_getfromfile(fname):
-    with open(fname, 'rt') as fd:
+    with open(fname, 'r') as fd:
         return ujson.load(fd)
-def loadpaswd():
-    global SSID
-    global PASS
-    try:
-        _jsonstr = json_getfromfile(PASSFILE)
-        _json = ujson.loads(_jsonstr)
-        SSID = _json["ssid"]
-        PASS = _json["paswd"]
-    except:
-        return {"ssid":"Jiya","paswd":"9971989772"}
 def parse_params(part):
     parameters = {}
     for piece in part.split(" "):
@@ -33,17 +21,14 @@ def parse_params(part):
                 parameters[eq_split[0]] = eq_split[1]
     return parameters
 class env:
-    WEEKFILE = 'week.json'
-    SRFILE = 'sunrise.json'
-    SSFILE = 'sunset.json'
     def __init__(self):
         self.month = ''
         self.week = {}
         self.today = ''
-        self.sunrise_h = 0
-        self.sunrise_m = 0
-        self.sunset_h = 0
-        self.sunset_m = 0
+        self.sr_h = 0
+        self.sr_m = 0
+        self.ss_h = 0
+        self.ss_m = 0
         self.updated = False
         self.startmonth = ''
     def update(self,rtc):
@@ -51,11 +36,15 @@ class env:
         self.today = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][list(rtc.datetime())[3]]
         if not self.updated:
             self.loadweek()
+            utime.sleep_ms(100)
             self.sunrise()
+            utime.sleep_ms(100)
             self.sunset()
+            utime.sleep_ms(100)
             self.startmonth = self.month
             _jsonstr = ujson.dumps(list(rtc.datetime()))
             json_savetofile('time.json',_jsonstr)
+            utime.sleep_ms(100)
             self.updated = True
         if self.month != self.startmonth:
             self.sunrise()
@@ -63,56 +52,56 @@ class env:
     def isevening(self,rtc):
         self.update(rtc)
         date = list(rtc.datetime())
-        if date[4] == self.sunset_h:
-            if date[5] == self.sunset_m:
+        if date[4] == self.ss_h:
+            if date[5] == self.ss_m:
                 return True
             else:
-                if date[5] < self.sunset_m:
+                if date[5] < self.ss_m:
                     return False
                 else:
                     return True
         else:
-            if date[4] > self.sunset_h:
+            if date[4] > self.ss_h:
                 return True
             else:
-                if date[4] == self.sunrise_h:
-                    if date[5] == self.sunrise_m:
+                if date[4] == self.sr_h:
+                    if date[5] == self.sr_m:
                         return False
                     else:
-                        if date[5] < self.sunrise_m:
+                        if date[5] < self.sr_m:
                             return True
                         else:
                             return False
                 else:
-                    if date[4] < self.sunrise_h:
+                    if date[4] < self.sr_h:
                         return True
                     else:
                         return False
     def ismorning(self,rtc):
         self.update(rtc)
         date = list(rtc.datetime())
-        if date[4] == self.sunrise_h:
-            if date[5] == self.sunrise_m:
+        if date[4] == self.sr_h:
+            if date[5] == self.sr_m:
                 return True
             else:
-                if date[5] < self.sunrise_m:
+                if date[5] < self.sr_m:
                     return False
                 else:
                     return True
         else:
-            if date[4] < self.sunrise_h:
+            if date[4] < self.sr_h:
                 return False
             else:
-                if date[4] == self.sunset_h:
-                    if date[5] == self.sunset_m:
+                if date[4] == self.ss_h:
+                    if date[5] == self.ss_m:
                         return False
                     else:
-                        if date[5] < self.sunset_m:
+                        if date[5] < self.ss_m:
                             return True
                         else:
                             return False
                 else:
-                    if date[4] < self.sunset_h:
+                    if date[4] < self.ss_h:
                         return True
                     else:
                         return False
@@ -121,38 +110,50 @@ class env:
         return "%s, %02d %s %04d, %02d:%02d:%02d, %s" % (
         ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][date[3]],date[2],
         ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec",][date[1] - 1],
-        date[0],date[4],date[5],date[6],"calcutta +5:30",)
-    def is_bulbturn_day(self,rtc):
+        date[0],date[4],date[5],date[6],"+5:30",)
+    def _midnighttosunrise(self):
         self.update(rtc)
-        if self.today in self.week:
-            if self.week[self.today] == 1:
-                return True
+        date = list(rtc.datetime())
+        h = date[4]
+        m = date[5]
+        if h <= self.sr_h:
+            if h == self.sr_h:
+                if m >= self.sr_m:
+                    return False
+                else:
+                    return True
             else:
-                return False
+                return True
         else:
             return False
-    def daysstr_turn(self):
-        daysstr = ''
-        for day in self.week:
-            if self.week[day] == 1:
-                daysstr = daysstr + day + ' '
-        return daysstr
-    def loadweek(self):
-        try:
-            _jsonstr = json_getfromfile(env.WEEKFILE)
-            self.week = ujson.loads(_jsonstr)
-        except Exception as e:
-            import sys
-            sys.print_exception(e)
-            self.week = {"Mon":1, "Tue":1, "Wed":1, "Thu":1, "Fri":1, "Sat":1, "Sun":1}
-            _jsonstr = ujson.dumps(self.week)
-            json_savetofile(env.WEEKFILE,jsondata=_jsonstr)
+    def is_bulbturn_day(self,rtc):
+        self.update(rtc)
+        date = list(rtc.datetime())
+        if self._midnighttosunrise():
+            if date[3] == 0:
+                previous_day = "Sun"
+            else:
+                previous_day = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][date[3] - 1]
+            if previous_day in self.week:
+                if self.week[previous_day] == 1:
+                    return True
+                else:
+                    return False
+            else:
+                print(f'previous day is not in week: {previous_day}')
+        else:
+            if self.today in self.week:
+                if self.week[self.today] == 1:
+                    return True
+                else:
+                    return False
+    
     def sunrise(self):
         try:
-            _jsonstr = json_getfromfile(env.SRFILE)
+            _jsonstr = json_getfromfile('sunrise.json')
             _json = ujson.loads(_jsonstr)
-            self.sunrise_h = _json[self.month]['h']
-            self.sunrise_m = _json[self.month]['m']
+            self.sr_h = _json[self.month]['h']
+            self.sr_m = _json[self.month]['m']
         except Exception as e:
             import sys
             sys.print_exception(e)
@@ -170,16 +171,16 @@ class env:
                     ,"Nov":{'h':6,'m':30}
                     ,"Dec":{'h':7,'m':0}
                 }
-            self.sunrise_h = sunrise[self.month]['h']
-            self.sunrise_m = sunrise[self.month]['m']
+            self.sr_h = sunrise[self.month]['h']
+            self.sr_m = sunrise[self.month]['m']
             _jsonstr = ujson.dumps(sunrise)
-            json_savetofile(env.SRFILE,_jsonstr)
+            json_savetofile('sunrise.json',_jsonstr)
     def sunset(self):
         try:
-            _jsonstr = json_getfromfile(env.SSFILE)
+            _jsonstr = json_getfromfile('sunset.json')
             _json = ujson.loads(_jsonstr)
-            self.sunset_h = _json[self.month]['h']
-            self.sunset_m = _json[self.month]['m']
+            self.ss_h = _json[self.month]['h']
+            self.ss_m = _json[self.month]['m']
         except Exception as e:
             import sys
             sys.print_exception(e)
@@ -197,27 +198,65 @@ class env:
                     ,"Nov":{'h':17,'m':30}
                     ,"Dec":{'h':17,'m':30}
                 }
-            self.sunset_h = sunset[self.month]['h']
-            self.sunset_m = sunset[self.month]['m']
+            self.ss_h = sunset[self.month]['h']
+            self.ss_m = sunset[self.month]['m']
             _jsonstr = ujson.dumps(sunset)
-            json_savetofile(env.SSFILE,_jsonstr)
+            json_savetofile('sunset.json',_jsonstr)
+    def loadweek(self):
+        try:
+            _jsonstr = json_getfromfile('week.json')
+            self.week = ujson.loads(_jsonstr)
+            #print(f"at load {self.week}")
+        except Exception as e:
+            import sys
+            sys.print_exception(e)
+            self.week = {'1':'Mon', '2':'Tue', '3':'Wed', '4':'Thu', '5':'Fri', '6':'Sat', '7':'Sun'}
+            _jsonstr = ujson.dumps(self.week)
+            json_savetofile('week.json',jsondata=_jsonstr)
     def updatedays_selection(self,params):
-        for day in self.week:
-            self.week[day] = 0
-        for day in params['week'].split("-"):
-            if day in self.week:
-                self.week[day] = 1
+        for key in self.week:
+            self.week[key] = ''
+        for key in params:
+            if key in self.week:
+                self.week[key] = params[key]
         _jsonstr = ujson.dumps(self.week)
-        json_savetofile(env.WEEKFILE,jsondata=_jsonstr)
-    def updatessidpaswd(self,params):
-        SSID = params['ssid']
-        PASS = params['paswd']
+        json_savetofile('week.json',jsondata=_jsonstr)
+    def daysstr_turn(self):
+        wk = []
+        for key in self.week:
+            wk.append(int(key))
+        wk.sort()
+        dstr = ''
+        for ikey in wk:
+            if self.week[str(ikey)] != '':
+                dstr = dstr + self.week[str(ikey)] + ' '
+        return dstr
+    def _getsidpaswd(self):
+        try:
+            _jsonstr = json_getfromfile('paswd.json')
+            return ujson.loads(_jsonstr)
+        except:
+            self.u_sidpaswd({"ssid":"Jiya","paswd":"9971989772"})
+            return {"ssid":"Jiya","paswd":"9971989772"}
+    def u_sidpaswd(self,params):
         _jsonstr = ujson.dumps(params)
-        json_savetofile(PASSFILE,jsondata=_jsonstr)
+        json_savetofile('paswd.json',jsondata=_jsonstr)
+    def w_notconnected(self,wlan):
+        if not wlan.active():
+            wlan.active(True)
+        _json = self._getsidpaswd()
+        wlan.connect(_json['ssid'], _json['paswd'])
+        tmo = 50
+        while not wlan.isconnected():
+            utime.sleep_ms(100)
+            tmo -= 1
+            if tmo == 0:
+                break
+        if tmo != 0:
+            return True
+        else:
+            return False
 ##
-loadpaswd()
-print(SSID)
-print(PASS)
 vne = env()
 frontbulb = bulb()
 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -231,16 +270,8 @@ s.listen(5)
 while True:
     if not wlan.isconnected():
         print('Blub ESP8266 is not Conneted to Wifi')
-        if not wlan.active():
-            wlan.active(True)
-        wlan.connect(SSID, PASS)
-        tmo = 50
-        while not wlan.isconnected():
-            utime.sleep_ms(100)
-            tmo -= 1
-            if tmo == 0:
-                break
-        if tmo == 0:
+        W = vne.w_notconnected(wlan)
+        if not W:
             print("!!! Not able to connect to WiFi")
             wlandisconnect(frontbulb)
             print("led D1={0} D2={1}".format(frontbulb.D1.value(),frontbulb.D2.value()))
@@ -256,15 +287,16 @@ while True:
             utime.sleep_ms(100)
     else:
         gc.collect()
-        utime.sleep_ms(3000)
         frontbulb.updaterelays(is_bulbturnday = vne.is_bulbturn_day(rtc),is_morning = vne.ismorning(rtc),is_evening = vne.isevening(rtc))
+        utime.sleep(3)
         try:
             response = ""
             conn, addr = s.accept()
-            print('Got a connection from %s' % str(addr))
+            #print('Got a connection from %s' % str(addr))
             request = conn.recv(1024)
             #conn.settimeout(None)
             request = str(request)
+            #print(request)
             if request.find(PASSWORD) == 6:
                 #Show page so user can click on page; GET request without params in url. eg. GET /password HTTP/1.1
                 response = frontbulb.web_page_password()
@@ -294,12 +326,11 @@ while True:
                     if params['bulb'] == 'off':
                         frontbulb.bulboff()
                 if 'ssid' in params and 'paswd' in params:
-                    vne.updatessidpaswd(params)
-                if 'week' in params:
-                    vne.cleardays_selection()
+                    vne.u_sidpaswd(params)
+                if 'w' in params:
                     vne.updatedays_selection(params)
             if response == "":
-                response = frontbulb.web_page(memstr = free(full=True),sunrise_h=vne.sunrise_h,sunrise_m=vne.sunrise_m,sunset_h=vne.sunset_h,sunset_m=vne.sunset_m,is_morning=vne.ismorning(rtc),daysstr=vne.daysstr_turn(),timestr=vne.timestring(rtc))
+                response = frontbulb.web_page(memstr = free(full=True),sr_h=vne.sr_h,sr_m=vne.sr_m,ss_h=vne.ss_h,ss_m=vne.ss_m,is_morning=vne.ismorning(rtc),daysstr=vne.daysstr_turn(),timestr=vne.timestring(rtc))
             conn.send('HTTP/1.1 200 OK\n')
             conn.send('Content-Type: text/html\n')
             conn.send('Connection: close\n\n')
@@ -318,11 +349,6 @@ while True:
             print(f"OSError : {e}")
             utime.sleep_ms(100)
             conn.close()
-            del request
-            del response
-            del params
-            del addr
-            del conn
             utime.sleep_ms(200)
             gc.collect()
             #machine.soft_reset()

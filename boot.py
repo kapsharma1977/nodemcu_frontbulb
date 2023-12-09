@@ -6,10 +6,7 @@ try:
   import usocket as socket
 except:
   import socket
-_GMTH = 5
-_GMTM = 30
-PASSFILE = 'paswd.json'
-def set_datetime_element(rtc, h=_GMTH, m=_GMTM):
+def set_datetime_element(rtc, h=5, m=30):
     date = list(rtc.datetime())
     date[4] = date[4] + h
     date[5] = date[5] + m
