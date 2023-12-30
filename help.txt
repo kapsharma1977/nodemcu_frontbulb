@@ -14,6 +14,9 @@ _D8GPIO12 = const(15) # pulled to GND, pulled to GND
 #print("led D1={0} D2={1}".format(D1.value(),D2.value()))
 #print(rtc.datetime())
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+#"<script>setTimeout(() => {{document.location.reload();}}, 30000);</script>" + "</body></html>"
+
 # dictionary that maps string date names to indexes in the RTC's datetime tuple
 DATETIME_ELEMENTS = {
     "year": 0,
