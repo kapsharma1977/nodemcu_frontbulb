@@ -10,16 +10,17 @@
 #include <ESP8266WebServer.h>
 #include <Ticker.h>
 #include <Wire.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 //#include <SPI.h>  // not used here, but needed to prevent a RTClib compile error
 #include "fauxmoESP.h"
 #include "RTClib.h"
-
-fauxmoESP fauxmo;
-ESP8266WebServer server(80);
-
 Ticker secondTick;
 volatile int watchdogCount = 0;
 
+fauxmoESP fauxmo;
+ESP8266WebServer server(80);
+//ESP8266WebServer *server = (ESP8266WebServer*)malloc(sizeof(ESP8266WebServer));
 
 //String dev1, dev2;
 uint8_t tmo = 100;
@@ -48,7 +49,18 @@ const char devices_body_html[] PROGMEM = R"rawliteral(
 // -----------------------------------------------------------------------------
 // Wifi
 // -----------------------------------------------------------------------------
+// virtual Scheduler{
 
+// }
+// virtual class Task{
+  
+//   On();
+//   Off();
+//   bool execute();
+// }
+// Virtual TaskManager{
+
+// }
 
 class encryp {
   static const uint8_t KEYLEN = 16;
@@ -141,6 +153,58 @@ class encryp {
     char strcharat(uint8_t i){return (i >= 0 && i < KEYLEN && str != NULL) ? str[i] : '\0';}
     char dstrcharat(uint8_t i){return (i >= 0 && i < KEYLEN && dstr != NULL) ? dstr[i] : '\0';}
 };
+class DevTime{
+  // Time Schedule
+  uint8_t week; // 00000000(0)(None) 00000001(1)(Mon) 00000010(2)(Tus) 00000100(4)(Wed) 00001000(8)(Thr) 00010000(16)(Fri) 00100000(32)(Sat) 01000000(64)(Sun) 10000000(128)(All)
+  uint8_t on_h,on_m,on_s;
+  uint8_t of_h,of_m,of_s;
+  uint8_t nblock;
+  bool enabel;
+  
+  public:
+    DevTime(){this->nblock = 0;enabel=false;}
+    DevTime(uint8_t nblock,uint8_t w,uint8_t onh,uint8_t onm,uint8_t ons,uint8_t ofh,uint8_t ofm,uint8_t ofs,bool e){init(nblock,w,onh,onm,ons,ofh,ofm,ofs,e);}
+    void init(uint8_t nblock,uint8_t w,uint8_t onh,uint8_t onm,uint8_t ons,uint8_t ofh,uint8_t ofm,uint8_t ofs,bool e){
+      this->nblock = nblock;
+      setweek(w);
+      setonH(onh);setonM(onm);setonS(ons);
+      setofH(ofh);setofM(ofm);setofS(ofs);
+      enabel=e;
+      }
+    bool H(uint8_t h){return h < 24 ? true : false;}
+    bool M(uint8_t m){return m < 60 ? true : false;}
+    bool S(uint8_t s){return s < 60 ? true : false;}
+    bool W(uint8_t w){return w <=128 ? true : false;}
+    uint8_t getnblock(){return nblock;}
+    void setnblock(uint8_t n){nblock = n;}
+    void setweek(uint8_t w){if(W(w)){week = w;}}
+    bool setonH(uint8_t h){if(H(h)){this->on_h = h;return true;}else{return false;}}
+    bool setonM(uint8_t m){if(M(m)){this->on_m = m;return true;}else{return false;}}
+    bool setonS(uint8_t s){if(S(s)){this->on_s = s;return true;}else{return false;}}
+    bool setofH(uint8_t h){if(H(h)){this->of_h = h;return true;}else{return false;}}
+    bool setofM(uint8_t m){if(M(m)){this->of_m = m;return true;}else{return false;}}
+    bool setofS(uint8_t s){if(S(s)){this->of_s = s;return true;}else{return false;}}
+    void setEnabel(bool e){enabel = e;}
+    bool getEnabel(){return enabel;}
+    uint8_t getweek(){return week;}
+    bool getonH(){return on_h;}
+    bool getonM(){return on_m;}
+    bool getonS(){return on_s;}
+    bool getofH(){return of_h;}
+    bool getofM(){return of_m;}
+    bool getofS(){return of_s;}
+  
+    bool isMon(){return week & (uint8_t)1u ? 1 : 0;}
+    bool isTus(){return week & (uint8_t)2u ? 1 : 0;}
+    bool isWed(){return week & (uint8_t)4u ? 1 : 0;}
+    bool isThr(){return week & (uint8_t)8u ? 1 : 0;}
+    bool isFri(){return week & (uint8_t)16u ? 1 : 0;}
+    bool isSat(){return week & (uint8_t)32u ? 1 : 0;}
+    bool isSun(){return week & (uint8_t)64u ? 1 : 0;}
+    bool isAll(){return week & (uint8_t)128u ? 1 : 0;}
+    bool isNone(){return week ? 1 : 0;}
+
+};
 class wifieeprom {
   // 512 = 16 * 32;  dev(1) 0 to 15 dev(2) 16 to 31 dev(3) 32 to 47 dev(n) LB =16*(n-1) , UB = (16*n) - 1 for 1 <= n <= 32
     // ssid is n = 32 i.e. LB = 16*(32-1) = 496 to UB = 16*32 - 1 = 511
@@ -152,13 +216,46 @@ class wifieeprom {
     static const uint16_t SIZE = 512;
     static const uint8_t LEN = 16; //length of block in char
   private:
+    uint8_t *datablock;
     char *blockdata;
     uint8_t len; // number of char(MAX 14(LEN-2)) in blockdata
-    uint8_t nblock; // is n
+    uint8_t nblock; // is n; invalid n is 0
     //LEN*(n-1)0 to (LEN*n)15 bytes are avalable; 
     //first byte LEN*(n-1) store length of name(namelen);
-    //last byte(LEN*n-1) stores state onof (LEN - 1)
+    //last byte(LEN*n-1) stores state onof (LEN - 1) in case of device name
     // so only 14(LEN-2) can be stored
+    void writebytes(const uint8_t * rawbytes, uint8_t rawbyteslen, uint8_t n){//16 bytes or namelen(first byte is count/number; so only 15 bytes contains data) number of bytes write;  n is block number in EEPROM
+      if(checkBlockNumber(n) and rawbyteslen <= (LEN - 1) and rawbyteslen > 0){  
+        EEPROM.begin(EEPROM_SIZE_T);
+        EEPROM.write(LEN*(n-1), rawbyteslen);// LB =16*(n-1); it store count/number of bytes written
+        for(int iadr = LEN*(n-1) + 1, irawbytes = 0; iadr <= LEN*n-1 and irawbytes < rawbyteslen;iadr++,irawbytes++)// UB = (16*n) - 1
+          EEPROM.write(iadr, rawbytes[irawbytes]);
+        ////////EEPROM.write(LEN*n-1, onof); // last byte for state
+        EEPROM.end();
+      }
+    }
+    void readbytes(uint8_t n){ 
+      if(checkBlockNumber(n)){ 
+        EEPROM.begin(EEPROM_SIZE_T);
+        len = (uint8_t)EEPROM.read(LEN*(n-1));//LB = LEN*(n-1) first byte of nth block UB = (LEN*n) -1 last byte nth block
+        //Serial.printf("wifi read N = %d\n",len);
+        if(len >= 1 and len <= LEN-1){ // MAX 15 count/number of bytes in blockdata; MIN 1 bytes
+          free(datablock);
+          nblock = n;
+          datablock = (uint8_t*)malloc((len) * sizeof(uint8_t));
+          for(int iadr = LEN*(n-1) + 1, irawbytes = 0; iadr <= LEN*n-1 and irawbytes < len;iadr++,irawbytes++)
+            datablock[irawbytes] = EEPROM.read(iadr);
+        }
+        else{
+          free(datablock);
+          nblock = 0;
+          datablock = NULL;
+          len=0;
+        }
+        EEPROM.end();
+      }
+      ESP.getFreeHeap();
+    }
     void write(const char * name, uint8_t namelen, uint8_t n){//nlen(MAX 14) is number of char in Device Name;  n is block/device number in EEPROM
       if(checkboundaries(n,namelen)){  
         EEPROM.begin(EEPROM_SIZE_T);
@@ -181,7 +278,7 @@ class wifieeprom {
       }
       //Serial.printf("Write encrypt string = %s\n",cryp.xor_decrypt());
     }
-    void read(uint8_t n){
+    void read(uint8_t n){ // Device Name 
       if(checkBlockNumber(n)){ 
         EEPROM.begin(EEPROM_SIZE_T);
         len = (uint8_t)EEPROM.read(LEN*(n-1));//LB = LEN*(n-1) first byte of nth block UB = (LEN*16) -1 last byte nth block
@@ -231,14 +328,14 @@ class wifieeprom {
     }
   public:
     wifieeprom() {blockdata = NULL;nblock = 0;len=0;}
-    ~wifieeprom(){free(blockdata);ESP.getFreeHeap();}
+    ~wifieeprom(){free(datablock);free(blockdata);ESP.getFreeHeap();}
     //String GetSsid(){read(32); return blockdata != NULL ? String(blockdata) : "";}
     //String GetPass(){read(31); return blockdata != NULL ? String(blockdata) : "";}
-    void clearblockdata(){free(blockdata);ESP.getFreeHeap();blockdata = NULL;nblock = 0;len=0;}
+    void clearblockdata(){free(datablock);free(blockdata);ESP.getFreeHeap();datablock = NULL;blockdata = NULL;nblock = 0;len=0;}
     uint8_t length(uint8_t n){EEPROM.begin(EEPROM_SIZE_T);uint8_t l = (uint8_t)EEPROM.read(LEN*(n-1));EEPROM.end();return l;}
-    bool checkboundaries(uint8_t n,uint8_t l){if(n >= 1 and n <= 32 and l <= (LEN - 2)){return 1;}else{return 0;}}
-    bool checkBlockNumber(uint8_t n){if(n >= 1 and n <= 32){return 1;}else{return 0;}}
-    bool checkBlockDataLen(uint8_t l){if(l >= 1 and l <= LEN-2){return 1;}else{return 0;}}
+    bool checkboundaries(uint8_t n,uint8_t l){if((n >= 1 and n <= 32) and (l <= (LEN - 2) and l > 0)){return 1;}else{return 0;}}
+    bool checkBlockNumber(uint8_t n){if(n >= 1 and n <= 32){return true;}else{return false;}}
+    bool checkBlockDataLen(uint8_t l){if(l >= 1 and l <= LEN-2){return true;}else{return false;}}
     uint8_t GetSsidlen(){return length(32);}
     uint8_t GetPasslen(){return length(31);}
     char* GetSsid(){read(32); return blockdata != NULL ? blockdata : NULL;}
@@ -253,15 +350,48 @@ class wifieeprom {
     void SavePass(String s,encryp &cryp){cryp.xor_encrypt(s);write(cryp,31);}
     void SavePass(char *s,uint8_t len){ write(s,len,31);}
     String GetDevice(uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30) {read(blocknum);return blockdata != NULL ? String(blockdata) : "";} else {return "";}}
-    bool SaveDevice(String dev_name, uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30 && dev_name.length() > 0){write(dev_name.c_str(),(uint8_t)dev_name.length(),blocknum); return 1;}else{return 0;}}
-    bool getDeviceState(uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30){uint8_t n = blocknum;EEPROM.begin(EEPROM_SIZE_T);bool onof = (bool)EEPROM.read(LEN*n-1);EEPROM.end();return onof;}else{return 0;}}
+    bool SaveDevice(String dev_name, uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30 && dev_name.length() > 0){write(dev_name.c_str(),(uint8_t)dev_name.length(),blocknum); return true;}else{return false;}}
+    bool getDeviceState(uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30){uint8_t n = blocknum;EEPROM.begin(EEPROM_SIZE_T);bool onof = (bool)EEPROM.read(LEN*n-1);EEPROM.end();return onof;}else{return false;}}
     void setDeviceState(uint8_t blocknum, bool onof){if(checkBlockNumber(blocknum) && blocknum <= 30){uint8_t n = blocknum;EEPROM.begin(EEPROM_SIZE_T);EEPROM.write(LEN*n-1, onof);;EEPROM.end();}}
+
+    void saveDavTime(DevTime &dt){
+      if(checkBlockNumber(dt.getnblock())){
+        clearblockdata();
+        len = 1+1+3+3;//week, enabel, on(h,m,s), off
+        nblock = dt.getnblock();
+        datablock = (uint8_t*)malloc((len) * sizeof(uint8_t));
+        datablock[0] = dt.getweek();
+        datablock[1] = (uint8_t)dt.getEnabel();
+        datablock[2] = dt.getonH();
+        datablock[3] = dt.getonM();
+        datablock[4] = dt.getonS();
+        datablock[5] = dt.getofH();
+        datablock[6] = dt.getofM();
+        datablock[7] = dt.getofS();
+        writebytes(datablock,len,nblock);
+        clearblockdata();
+      }
+    }
+    void getDavTime(DevTime &dt){
+      if(checkBlockNumber(dt.getnblock())){
+        readbytes(dt.getnblock());
+        dt.setweek(datablock[0]);
+        dt.setEnabel((bool)datablock[1]);
+        dt.setonH(datablock[2]);
+        dt.setonM(datablock[3]);
+        dt.setonS(datablock[4]);
+        dt.setofH(datablock[5]);
+        dt.setofM(datablock[6]);
+        dt.setofS(datablock[7]);
+        clearblockdata();
+      }
+    }
 };
 class DevPinOut{
   uint8_t p;
-  String name; // Devices Name(AlphaNumeric) given in Alexa
+  String name; uint8_t nblock; // Devices Name(AlphaNumeric) given in Alexa
   bool onof;
-  uint8_t nblock;
+  
   void Pin(uint8_t p){if(isValidPin(p)){this->p = p;}}
   public:
     static const uint8_t D5_GPIO14 = 14;
@@ -270,14 +400,15 @@ class DevPinOut{
     // pins sutable for output only
     static const uint8_t D3_GPIO0 = 0;
     static const uint8_t D4_GPIO2 = 2;
-    DevPinOut(){p=255; name=""; onof=0;nblock=0;}
+    DevTime dt;
+    DevPinOut():dt(){p=255; name=""; onof=0;nblock=0;}
     //DevPinOut(uint8_t p){this->p=p; this->name=""; this->onof=0;pinMode(p, OUTPUT);digitalWrite(p, LOW);}
     //DevPinOut(uint8_t p,String name){this->p=p; this->name=name; this->onof=0;pinMode(p, OUTPUT);digitalWrite(p, LOW);}
     ~DevPinOut(){}
     bool isValidPin(){return isValidPin(this->p);}
     bool isValidPin(uint8_t p){if(D3_GPIO0 == p || D4_GPIO2 == p || D5_GPIO14 == p || D6_GPIO12 == p || D7_GPIO13 == p){return 1;}else{return 0;}}
     //void init(uint8_t p){Pin(p); this->name=""; this->onof=0;pinMode(p, OUTPUT);digitalWrite(p, LOW);}
-    bool init(uint8_t p,String name,bool onof,uint8_t nblock){
+    bool init(uint8_t p,String name,bool onof,uint8_t nblock,uint8_t DevTimenblock){
       if(!setname(name)){return 0;}
       if(!isValidPin(p)){return 0;}
       Pin(p); 
@@ -289,7 +420,8 @@ class DevPinOut{
         on();
       else
         off();
-      return 1;
+      dt.setnblock(DevTimenblock);
+      return true;
     }
     bool on(){
       if(!onof){
@@ -328,20 +460,16 @@ class DevPinOuts{
     DevPinOut devs[MAX]; 
     DevPinOuts(){
       wifieeprom fetchdev;
-      devs[0].init(DevPinOut::D3_GPIO0,fetchdev.GetDevice(1),fetchdev.getDeviceState(1),1);
-      devs[1].init(DevPinOut::D4_GPIO2,fetchdev.GetDevice(2),fetchdev.getDeviceState(2),2);
-      devs[2].init(DevPinOut::D5_GPIO14,fetchdev.GetDevice(3),fetchdev.getDeviceState(3),3);
-      devs[3].init(DevPinOut::D6_GPIO12,fetchdev.GetDevice(4),fetchdev.getDeviceState(4),4);
+      devs[0].init(DevPinOut::D3_GPIO0,fetchdev.GetDevice(1),fetchdev.getDeviceState(1),1,MAX+1);
+      devs[1].init(DevPinOut::D4_GPIO2,fetchdev.GetDevice(2),fetchdev.getDeviceState(2),2,MAX+2);
+      devs[2].init(DevPinOut::D5_GPIO14,fetchdev.GetDevice(3),fetchdev.getDeviceState(3),3,MAX+3);
+      devs[3].init(DevPinOut::D6_GPIO12,fetchdev.GetDevice(4),fetchdev.getDeviceState(4),4,MAX+4);
+      fetchdev.getDavTime(devs[0].dt);
+      fetchdev.getDavTime(devs[1].dt);
+      fetchdev.getDavTime(devs[2].dt);
+      fetchdev.getDavTime(devs[3].dt);
     }
-    //DevPinOuts(String s0,String s1,String s2,String s3){devs[0].init(DevPinOut::D3_GPIO0,s0);devs[1].init(DevPinOut::D4_GPIO2,s1);devs[2].init(DevPinOut::D5_GPIO14,s2);devs[3].init(DevPinOut::D6_GPIO12,s3);}
     ~DevPinOuts(){}
-    // bool devon(String s){
-    //   for(uint8_t i = 0; i < MAX; i++){
-    //     if(devs[i].getname() == s)
-    //       return devs[i].on();
-    //   }
-    //   return 0;
-    // }
     void devtoggal(const char * device_name, bool state){
       for(uint8_t i = 0; i < MAX; i++){
         if(strcmp(device_name,devs[i].getDevicename().c_str()))
@@ -351,13 +479,6 @@ class DevPinOuts{
             devs[i].off();
       }
     }
-    // bool setDeviceName(uint8_t dev_num0, String name){
-    //   if(dev_num0 < MAX && dev_num0 >= 0)
-    //     return devs[dev_num0].setname(name);
-    //   return 0;
-    // }
-    // String getDeviceName(uint8_t dev_num0){if(dev_num0 < MAX && dev_num0 >= 0){return devs[dev_num0].getname();}else{return "";}}
-    //DevPinOut& getDevPinOut(uint8_t dev_num0){if(dev_num0 < MAX && dev_num0 >= 0){return devs[dev_num0];}else{return NULL;}}
 };
 DevPinOuts pnos;
 class encrpeeprom{
@@ -375,16 +496,116 @@ class encrpeeprom{
 };
 class ds1307rtc{
   RTC_DS1307 RTC;
+  uint8_t uday; // day of ntp time from internet and adjusted RTC
   public:
     ds1307rtc(){
     }
-    void init(){Wire.begin();RTC.begin();}
-    void printtest(){
+    void initRTC(){
+      Wire.begin();
+      RTC.begin();
       if (! RTC.isrunning()) {
         Serial.println("RTC is NOT running!");
         // following line sets the RTC to the date & time this sketch was compiled
         RTC.adjust(DateTime(__DATE__, __TIME__));
       }
+      uday = RTC.now().day();
+    }
+    bool ntpadjustRTC(){
+      WiFiUDP ntpUDP;
+      NTPClient ntpClient = NTPClient(ntpUDP, "pool.ntp.org");
+      ntpClient.begin();
+      ntpClient.setTimeOffset(3600*5+1800);
+      unsigned long rlast = millis();
+      bool flag = ntpClient.update();
+      while(!flag) {
+        flag = ntpClient.forceUpdate();
+        if ((millis() - rlast > 2000) && !flag){rlast = millis();} else {break;}
+        flag = ntpClient.update();
+      }
+      if(flag){// Serial.println("ntp fail");return !flag;
+        //String formattedDate = ntpClient.getFormattedTime();//.getFormattedDate();
+        //Serial.printf("ntp time :%s\n",ntpClient.getFormattedTime());
+        //Week Days
+        //String weekDays[7]={"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+        //Month names
+        //String months[12]={"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
+        //Serial.println(ntpClient.getEpochTime());
+        time_t epochTime = ntpClient.getEpochTime();
+        //Serial.print("Epoch Time: ");
+        //Serial.println(epochTime);
+        
+        String formattedTime = ntpClient.getFormattedTime();
+        // Serial.print("Formatted Time: ");
+        // Serial.println(formattedTime);  
+
+        
+        int currentHour = ntpClient.getHours();
+        // Serial.print("Hour: ");
+        // Serial.println(currentHour);  
+
+        int currentMinute = ntpClient.getMinutes();
+        // Serial.print("Minutes: ");
+        // Serial.println(currentMinute); 
+        
+        int currentSecond = ntpClient.getSeconds();
+        // Serial.print("Seconds: ");
+        // Serial.println(currentSecond);  
+
+        // String weekDay = weekDays[ntpClient.getDay()];
+        // Serial.print("Week Day: ");
+        // Serial.println(weekDay);    
+        delay(1000);
+        //Get a time structure
+        struct tm *ptm = gmtime((time_t *)&epochTime);
+        
+        // int monthDay = ptm->tm_mday;
+        // Serial.print("Month day: ");
+        // Serial.println(monthDay);
+
+        // int currentMonth = ptm->tm_mon+1;
+        // Serial.print("Month: ");
+        // Serial.println(currentMonth);
+
+        // String currentMonthName = months[currentMonth-1];
+        // Serial.print("Month name: ");
+        // Serial.println(currentMonthName);
+
+        //int currentYear = ptm->tm_year+1900;
+        // Serial.print("Year: ");
+        // Serial.println(currentYear);
+        // Serial.print("tm_year: ");
+        // Serial.println(ptm->tm_year);
+
+        //Print complete date:
+        // String currentDate = String(currentYear) + "-" + String(currentMonth) + "-" + String(monthDay);
+        // Serial.print("Current date: ");
+        // Serial.println(currentDate);
+
+        DateTime dt = DateTime(ptm->tm_year+1900,ptm->tm_mon,ptm->tm_mday,currentHour,currentMinute,currentSecond); //(year, month, day, hour, min, sec);
+        RTC.adjust(dt);
+      }
+      else
+        Serial.println("ntp fail");
+      ntpClient.end();
+      return flag;
+    }
+    void checkandupdateRTC(){ // once in a day
+      if(uday < RTC.now().day()){
+        if(ntpadjustRTC())
+          uday = RTC.now().day();
+      }
+    }
+    String date(char seaprator = ':'){//dd:mm:yyyy
+      DateTime now = RTC.now();
+      char d[11];
+      d[10] = '\0';
+      sprintf(&d[0],"%d%c",now.day(),seaprator);
+      sprintf(&d[3],"%d%c",now.month(),seaprator);
+      sprintf(&d[6],"%d",now.year());
+      return String(d);
+    }
+    void printRTC(){
       DateTime now = RTC.now();
       Serial.print(now.year(), DEC);
       Serial.print('/');
@@ -423,10 +644,9 @@ class ds1307rtc{
       Serial.println();
       
       Serial.println();
-  
-    }
-    
+    } 
 };
+
 void ISRwatchdog() {
   watchdogCount++;
   if ( watchdogCount == 20 ) {
@@ -494,7 +714,6 @@ void setupfauxmo() {
     });
 
 }
-
 void defWebPage(){
   if(server.args() == 0)
     server.send(200, "text/html", String(header_html) + String(sidpas_body_html));
@@ -518,7 +737,6 @@ void defWebPage(){
   }
   ESP.getFreeHeap();
 }
-
 void PageDeviesName(){
   if(server.args() == 0)
     server.send(200, "text/html", String(header_html) + String(devices_body_html));
@@ -539,98 +757,100 @@ void PageDeviesName(){
   }
   ESP.getFreeHeap();
 }
-
-
 ds1307rtc d1307rtc;
 void setup(){
   // Init serial port and clean garbage
-    Serial.begin(SERIAL_BAUDRATE);
-    secondTick.attach(1, ISRwatchdog);
-    Serial.println();
-    d1307rtc.init();
-    d1307rtc.printtest();
-    Serial.println();
-    
-    // Wifi
-    // Set WIFI module to STA mode
-    WiFi.mode(WIFI_STA);
+  Serial.begin(SERIAL_BAUDRATE);
+  secondTick.attach(1, ISRwatchdog);
+  Serial.println();
+  Serial.println();
+  d1307rtc.initRTC();
+  d1307rtc.printRTC();
+  
+  Serial.println();
+  
+  // Wifi
+  // Set WIFI module to STA mode
+  WiFi.mode(WIFI_STA);
 
-    encrpeeprom cryprom;
-    Serial.println(cryprom.cryp.Key());
-    Serial.printf("ssid : %s; paswd : %s\n",cryprom.getssid(),cryprom.getpass());
+  encrpeeprom cryprom;
+  Serial.println(cryprom.cryp.Key());
+  //cryprom.savepass("9971989772");
+  Serial.printf("ssid : %s; paswd : %s\n",cryprom.getssid(),cryprom.getpass());
 
-    // pnos.setDeviceName(0, cryprom.rom.GetDevice(0));
-    // pnos.setDeviceName(1, cryprom.rom.GetDevice(1));
-    //dev1 = cryprom.rom.GetDevice(0);
-    //dev2 = cryprom.rom.GetDevice(1);
-    Serial.printf("Device 1 eeprom is : %s\n", pnos.devs[0].getDevicename());
-    Serial.printf("Device 2 eeprom is : %s\n", pnos.devs[1].getDevicename());
+  // pnos.setDeviceName(0, cryprom.rom.GetDevice(0));
+  // pnos.setDeviceName(1, cryprom.rom.GetDevice(1));
+  //dev1 = cryprom.rom.GetDevice(0);
+  //dev2 = cryprom.rom.GetDevice(1);
+  Serial.printf("Device 1 eeprom is : %s\n", pnos.devs[0].getDevicename());
+  Serial.printf("Device 2 eeprom is : %s\n", pnos.devs[1].getDevicename());
 
-    Serial.printf("getSketchSize : %d\n", ESP.getSketchSize());
-    Serial.printf("getFreeSketchSpace : %d\n", ESP.getFreeSketchSpace());
+  Serial.printf("getSketchSize : %d\n", ESP.getSketchSize());
+  Serial.printf("getFreeSketchSpace : %d\n", ESP.getFreeSketchSpace());
 
-    Serial.printf("getFlashChipSizeByChipId : %d\n", ESP.getFlashChipSizeByChipId());
-    Serial.printf("getFlashChipSize : %d\n", ESP.getFlashChipSize());
-    // Connect
-    WiFi.begin(cryprom.getssid(),cryprom.getpass());
-    
-    
-    // Wait
-    while (WiFi.status() != WL_CONNECTED) {
-        Serial.print(".");
-        delay(100);
-        tmo -= 1;
-        if(tmo == 0)
-          break;
-    }
-    if(tmo == 0){
-      WiFi.disconnect();
+  Serial.printf("getFlashChipSizeByChipId : %d\n", ESP.getFlashChipSizeByChipId());
+  Serial.printf("getFlashChipSize : %d\n", ESP.getFlashChipSize());
+  // Connect
+  WiFi.begin(cryprom.getssid(),cryprom.getpass());
+  
+  
+  // Wait
+  while (WiFi.status() != WL_CONNECTED) {
+      Serial.print(".");
       delay(100);
-      WiFi.mode(WIFI_AP);
-      WiFi.softAP("DeziWebApp","DeziWebApp",1,0,1);
-      delay(100);
-      Serial.println();
-      Serial.printf("tmo = %d",tmo);
-      Serial.println();
-      Serial.print("Soft-AP IP address = ");
-      Serial.println(WiFi.softAPIP());
-      
-      // Route for root / web page
-      server.on("/wifi",defWebPage);
-      server.on("/devices",PageDeviesName);
-      server.begin();
-      Serial.println();
-      Serial.println("HTTP server started");
-      
-    }
-    else{
-      Serial.println();
-      // Connected!
-      server.stop(); // Stop Webserver for ssid and paswd change
-      Serial.printf("[WIFI] STATION Mode, SSID: %s, IP address: %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
-      setupfauxmo();
-    }
-
+      tmo -= 1;
+      if(tmo == 0)
+        break;
+  }
+  if(tmo == 0){
+    WiFi.disconnect();
+    delay(100);
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("DeziWebApp","DeziWebApp",1,0,1);
+    delay(100);
+    Serial.println();
+    Serial.printf("tmo = %d",tmo);
+    Serial.println();
+    Serial.print("Soft-AP IP address = ");
+    Serial.println(WiFi.softAPIP());
+    
+    // Route for root / web page
+    server.on("/wifi",defWebPage);
+    server.on("/devices",PageDeviesName);
+    server.begin();
+    Serial.println();
+    Serial.println("HTTP server started");
+  }
+  else{
+    Serial.println();
+    d1307rtc.ntpadjustRTC();
+    d1307rtc.printRTC();
+    // Connected!
+    server.stop(); // Stop Webserver for ssid and paswd change
+    Serial.printf("[WIFI] STATION Mode, SSID: %s, IP address: %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+    setupfauxmo();
+  }
 }
 void loop() {
-    // Feeding the dog
-    watchdogCount = 0;
-    if(tmo != 0){
-      // fauxmoESP uses an async TCP server but a sync UDP server
-      // Therefore, we have to manually poll for UDP packets
-      fauxmo.handle();
+  // Feeding the dog
+  watchdogCount = 0;
+  if(tmo != 0){
+    // fauxmoESP uses an async TCP server but a sync UDP server
+    // Therefore, we have to manually poll for UDP packets
+    fauxmo.handle();
 
-      // This is a sample code to output free heap every 5 seconds
-      // This is a cheap way to detect memory leaks
-      static unsigned long last = millis();
-      if (millis() - last > 5000) {
-          last = millis();
-          ESP.getFreeHeap();
-          //Serial.printf("[MAIN] Free heap: %d bytes\n", ESP.getFreeHeap());
-      }
+    // This is a sample code to output free heap every 5 seconds
+    // This is a cheap way to detect memory leaks
+    static unsigned long last = millis();
+    if (millis() - last > 5000) {
+        last = millis();
+        ESP.getFreeHeap();
+        d1307rtc.checkandupdateRTC();
+        //Serial.printf("[MAIN] Free heap: %d bytes\n", ESP.getFreeHeap());
     }
-    else{
-      server.handleClient();
-      
-    }
+  }
+  else{
+    //Serial.printf("[handleClient] tmo: %d\n", tmo);
+    server.handleClient();
+  }
 }
