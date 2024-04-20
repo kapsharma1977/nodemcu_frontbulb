@@ -15,22 +15,57 @@
 //#include <SPI.h>  // not used here, but needed to prevent a RTClib compile error
 #include "fauxmoESP.h"
 #include "RTClib.h"
+#define debug 1
+
+#define SERIAL_BAUDRATE     115200
+#define EEPROM_SIZE_T       512
+#define LEN                 16
+#define KEYLEN              16
+#define MAX_DEVS            4
+
+#define MON                 0x01 //1;   00000001
+#define TUS                 0x02 //2;   00000010
+#define WED                 0x04 //4;   00000100
+#define THU                 0x08 //8;   00001000
+#define FRI                 0x10 //16;  00010000
+#define SAT                 0x20 //32;  00100000
+#define SUN                 0x40 //64;  01000000
+#define ALLDAYS             0x7F //01111111     //////0x80 //128; 10000000
+#define UNMON               0xFE //254 bitwise &; 11111110
+#define UNTUS               0xFD // 253 11111101
+#define UNWED               0xFB // 11111011
+#define UNTHU               0xF7 // 11110111
+#define UNFRI               0xEF // 11101111
+#define UNSAT               0xDF // 11011111
+#define UNSUN               0x8F //10111111
+///////////#define UNDAYS              0x7F //01111111
+
+#define D5_GPIO14           14
+#define D6_GPIO12           12
+#define D7_GPIO13           13
+// pins sutable for output only
+#define D3_GPIO0            0
+#define D4_GPIO2            2
+
+#define D5_GPIO14block      1 // device number
+#define D6_GPIO12block      2
+/////#define D7_GPIO13block          5
+// pins sutable for output only
+#define D3_GPIO0block       3
+#define D4_GPIO2block       4
 Ticker secondTick;
 volatile int watchdogCount = 0;
 
 fauxmoESP fauxmo;
 ESP8266WebServer server(80);
 //ESP8266WebServer *server = (ESP8266WebServer*)malloc(sizeof(ESP8266WebServer));
-
-//String dev1, dev2;
+char D_5[(LEN-2)+1],D_6[14+1],D_3[14+1],D_4[14+1];// last char is '\0'
+bool D5onof,D6onof,D3onof,D4onof; // bool &presentState
 uint8_t tmo = 100;
 uint32_t Chipid;
 uint32_t flashid;
 // -----------------------------------------------------------------------------
-#define debug 1
 
-#define SERIAL_BAUDRATE     115200
-#define EEPROM_SIZE_T       512
 
 const char header_html[] PROGMEM = R"rawliteral(
   <!DOCTYPE html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -42,169 +77,12 @@ const char sidpas_body_html[] PROGMEM = R"rawliteral(
   <body> <h2>IoT Web Server : Change Wifi SSID and Password</h2><form action="/wifi" method="get" target="_self"><fieldset><div class="container" style="background-color:#f1f1f1"><label for="ssid">New Wifi SSID:</label><input type="text" id="ssid" name="ssid" required><br><label for="paswd">New Wifi Password:</label><input type="password" id="paswd" name="paswd" required></div></fieldset><button type="submit">Set New Wifi SSID and Password</button></form></body></html>
   )rawliteral";
 const char devices_body_html[] PROGMEM = R"rawliteral(
-  <body> <h2>IoT Web Server : Change Devices Name</h2><form action="/devices" method="get" target="_self"><fieldset><div class="container" style="background-color:#f1f1f1"><label for="div1">Device 1 Name :</label><input type="text" id="div1" name="div1" required><br><label for="div2">Device 2 Name:</label><input type="text" id="div2" name="div2" required></div></fieldset><button type="submit">Set Devices Name</button></form></body></html>
+  <body> <h2>IoT Web Server : Change Devices Name</h2><form action="/devices" method="get" target="_self"><fieldset><div class="container" style="background-color:#f1f1f1"><label for="div1">Device 1 Name :</label><input type="text" id="div1" name="div1" required><br><label for="div2">Device 2 Name:</label><input type="text" id="div2" name="div2" required></div><br><label for="div3">Device 3 Name:</label><input type="text" id="div3" name="div3" required></div><br><label for="div4">Device 4 Name:</label><input type="text" id="div4" name="div4" required></div></fieldset><button type="submit">Set Devices Name</button></form></body></html>
+  )rawliteral";
+const char week_body_html[] PROGMEM = R"rawliteral(
+  <body> <h2>IoT Web Server : Change Week Days On/Off</h2><form action="/week" method="get" target="_self"><fieldset><div class="container" style="background-color:#f1f1f1"><label for="dn">Device Number(1|2|3|4) :</label><input type="text" id="dn" name="dn" required><br><input type="checkbox" name="0" value="Mon">Mon<br><input type="checkbox" name="1" value="Tue">Tue<br><input type="checkbox" name="2" value="Wed">Wed<br><input type="checkbox" name="3" value="Thu">Thur<br><input type="checkbox" name="4" value="Fri">Fri<br> <input type="checkbox" name="5" value="Sat">Sat<br><input type="checkbox" name="6" value="Sun">Sun<br><button type="submit" value="Submit">Submit</button></div></fieldset></form></body></html>
   )rawliteral";
 // -----------------------------------------------------------------------------
-
-// -----------------------------------------------------------------------------
-// Wifi
-// -----------------------------------------------------------------------------
-// virtual Scheduler{
-
-// }
-// virtual class Task{
-  
-//   On();
-//   Off();
-//   bool execute();
-// }
-// Virtual TaskManager{
-
-// }
-
-class encryp {
-  static const uint8_t KEYLEN = 16;
-  char *key;
-  uint8_t len;
-  char *str; // encrypted
-  char *dstr;// decrypted
-  
-  public:
-    encryp(){
-      len=0;
-      str = NULL;
-      dstr = NULL;
-      key= (char *)malloc((KEYLEN+1)*sizeof(char)); // one for null char
-      String m = WiFi.macAddress();
-      char tmp[7];
-      itoa(ESP.getChipId(),tmp,16);
-      key[0] = tmp[0];
-      key[1] = tmp[1];
-      uint8_t ik = 2;
-      for(uint8_t i = 0; i < m.length() && ik < (2 + 12); i++){
-        if(m.charAt(i) != ':'){
-          key[ik] = m.charAt(i);
-          ik++;
-        }
-      }
-      key[14] = tmp[2];
-      key[15] = tmp[3];
-      //free(tmp);
-      key[KEYLEN] = '\0';
-      ESP.getFreeHeap();
-    }
-    ~encryp(){free(key);free(str);free(dstr);ESP.getFreeHeap();}
-    void clear(){free(str);free(dstr);ESP.getFreeHeap();str = NULL;dstr = NULL;len=0;}
-    //char xor_encrypt(char c, uint8_t at_i_key){return (at_i_key >= 0 && at_i_key < KEYLEN && c != '\0') ? c^key[at_i_key] : '\0';}
-    char xor_encrypt(char c, uint8_t at_i_key){return c^key[at_i_key];}
-    char * xor_encrypt(String s){//char *string, uint8_t slen)
-      if(s.length() <= KEYLEN && s.length() > 0){
-        clear();
-        len = s.length();
-        str = (char *)malloc(len*sizeof(char));
-        //Serial.printf("Length %d\n",len);
-        for(uint8_t i = 0; i < len; i++){
-          str[i] = xor_encrypt(s.charAt(i),i);
-          //Serial.printf("Char at xor_encrypt(String s) = %c \tstr = %c\n",s.charAt(i),str[i]^key[i]);
-          // if(tmp != '\0')
-          //   str[i] = tmp;
-          // else{
-          //   Serial.printf(" char = %c Loop Break %d tmp = %c \n",s.charAt(i), i, tmp);
-          //   break;
-          // }
-        }
-        //Serial.printf("len %d\n",len);
-        return str;
-      }
-      else
-        {return NULL;}
-    }
-    String xor_decrypt(){// member *str is decrypted by this fn, so do not call clear()
-      if(str != NULL and len > 0){
-        if(dstr != NULL){free(dstr);ESP.getFreeHeap();}
-        dstr = (char *)malloc((len + 1)*sizeof(char));
-        for(uint8_t i = 0; i < len; i++){
-          dstr[i] = xor_decrypt(str[i],i);
-        }
-        dstr[len] = '\0';
-        //Serial.printf("string =%s;len =%d\n",dstr,len);
-        //Serial.println(String(dstr));
-        return String(dstr);
-      }
-      else
-        return "";
-    }
-    //char xor_decrypt(char encrypted_c, uint8_t at_i_key){return (at_i_key >= 0 && at_i_key < KEYLEN) ? encrypted_c^key[at_i_key] : '\0';}
-    char xor_decrypt(char encrypted_c, uint8_t at_i_key){return encrypted_c^key[at_i_key];}
-    String xor_decrypt(char *str, uint8_t len){
-      if(str != NULL and len > 0){
-        clear();
-        this->str = str;
-        this->len = len;
-        return this->xor_decrypt();
-      }
-      else
-        return "";
-
-    }
-    uint8_t length(){return (len > 0 && len < KEYLEN) ? len : 0;}
-    String Key(){return String(key);}
-    char keycharat(uint8_t i){return (i >= 0 && i < KEYLEN) ? key[i] : '\0';}
-    char strcharat(uint8_t i){return (i >= 0 && i < KEYLEN && str != NULL) ? str[i] : '\0';}
-    char dstrcharat(uint8_t i){return (i >= 0 && i < KEYLEN && dstr != NULL) ? dstr[i] : '\0';}
-};
-class DevTime{
-  // Time Schedule
-  uint8_t week; // 00000000(0)(None) 00000001(1)(Mon) 00000010(2)(Tus) 00000100(4)(Wed) 00001000(8)(Thr) 00010000(16)(Fri) 00100000(32)(Sat) 01000000(64)(Sun) 10000000(128)(All)
-  uint8_t on_h,on_m,on_s;
-  uint8_t of_h,of_m,of_s;
-  uint8_t nblock;
-  bool enabel;
-  
-  public:
-    DevTime(){this->nblock = 0;enabel=false;}
-    DevTime(uint8_t nblock,uint8_t w,uint8_t onh,uint8_t onm,uint8_t ons,uint8_t ofh,uint8_t ofm,uint8_t ofs,bool e){init(nblock,w,onh,onm,ons,ofh,ofm,ofs,e);}
-    void init(uint8_t nblock,uint8_t w,uint8_t onh,uint8_t onm,uint8_t ons,uint8_t ofh,uint8_t ofm,uint8_t ofs,bool e){
-      this->nblock = nblock;
-      setweek(w);
-      setonH(onh);setonM(onm);setonS(ons);
-      setofH(ofh);setofM(ofm);setofS(ofs);
-      enabel=e;
-      }
-    bool H(uint8_t h){return h < 24 ? true : false;}
-    bool M(uint8_t m){return m < 60 ? true : false;}
-    bool S(uint8_t s){return s < 60 ? true : false;}
-    bool W(uint8_t w){return w <=128 ? true : false;}
-    uint8_t getnblock(){return nblock;}
-    void setnblock(uint8_t n){nblock = n;}
-    void setweek(uint8_t w){if(W(w)){week = w;}}
-    bool setonH(uint8_t h){if(H(h)){this->on_h = h;return true;}else{return false;}}
-    bool setonM(uint8_t m){if(M(m)){this->on_m = m;return true;}else{return false;}}
-    bool setonS(uint8_t s){if(S(s)){this->on_s = s;return true;}else{return false;}}
-    bool setofH(uint8_t h){if(H(h)){this->of_h = h;return true;}else{return false;}}
-    bool setofM(uint8_t m){if(M(m)){this->of_m = m;return true;}else{return false;}}
-    bool setofS(uint8_t s){if(S(s)){this->of_s = s;return true;}else{return false;}}
-    void setEnabel(bool e){enabel = e;}
-    bool getEnabel(){return enabel;}
-    uint8_t getweek(){return week;}
-    bool getonH(){return on_h;}
-    bool getonM(){return on_m;}
-    bool getonS(){return on_s;}
-    bool getofH(){return of_h;}
-    bool getofM(){return of_m;}
-    bool getofS(){return of_s;}
-  
-    bool isMon(){return week & (uint8_t)1u ? 1 : 0;}
-    bool isTus(){return week & (uint8_t)2u ? 1 : 0;}
-    bool isWed(){return week & (uint8_t)4u ? 1 : 0;}
-    bool isThr(){return week & (uint8_t)8u ? 1 : 0;}
-    bool isFri(){return week & (uint8_t)16u ? 1 : 0;}
-    bool isSat(){return week & (uint8_t)32u ? 1 : 0;}
-    bool isSun(){return week & (uint8_t)64u ? 1 : 0;}
-    bool isAll(){return week & (uint8_t)128u ? 1 : 0;}
-    bool isNone(){return week ? 1 : 0;}
-
-};
 class wifieeprom {
   // 512 = 16 * 32;  dev(1) 0 to 15 dev(2) 16 to 31 dev(3) 32 to 47 dev(n) LB =16*(n-1) , UB = (16*n) - 1 for 1 <= n <= 32
     // ssid is n = 32 i.e. LB = 16*(32-1) = 496 to UB = 16*32 - 1 = 511
@@ -213,291 +91,210 @@ class wifieeprom {
     //last byte(LEN*n-1) stores state onof (LEN - 1)
     // Device number is block number
     // nlen is number of char in davice name <= LEN-2(14); 
-    static const uint16_t SIZE = 512;
-    static const uint8_t LEN = 16; //length of block in char
-  private:
-    uint8_t *datablock;
-    char *blockdata;
-    uint8_t len; // number of char(MAX 14(LEN-2)) in blockdata
-    uint8_t nblock; // is n; invalid n is 0
+    ////static const uint16_t SIZE = 512;
+    ////static const uint8_t LEN = 16; //length of block in char
     //LEN*(n-1)0 to (LEN*n)15 bytes are avalable; 
     //first byte LEN*(n-1) store length of name(namelen);
     //last byte(LEN*n-1) stores state onof (LEN - 1) in case of device name
     // so only 14(LEN-2) can be stored
-    void writebytes(const uint8_t * rawbytes, uint8_t rawbyteslen, uint8_t n){//16 bytes or namelen(first byte is count/number; so only 15 bytes contains data) number of bytes write;  n is block number in EEPROM
-      if(checkBlockNumber(n) and rawbyteslen <= (LEN - 1) and rawbyteslen > 0){  
+  public:
+    //uint8_t len; // number of char(MAX 14(LEN-2)) in blockdata
+    //uint8_t nblock; // is n; invalid n is 0
+    wifieeprom(){} //{datablock = NULL;nblock = 0;len=0;}
+    ~wifieeprom(){}//{free(datablock);ESP.getFreeHeap();}
+    
+    static uint8_t length(uint8_t n){EEPROM.begin(EEPROM_SIZE_T);uint8_t l = (uint8_t)EEPROM.read(LEN*(n-1));EEPROM.end();return l;}
+    static bool checkboundaries(uint8_t n,uint8_t l){return (n >= 1 and n <= 32) and (l <= (LEN - 2) and l > 0) ? true : false;}
+    static bool checkBlockNumber(uint8_t n){return n >= 1 and n <= 32 ? true : false;}
+    static bool checkBlockDataLen(uint8_t l){return l >= 1 and l <= LEN-2 ? true:false;}
+    static void writebytes(const uint8_t * rawbytes, uint8_t rawbyteslen, uint8_t n);//16 bytes or namelen(first byte is count/number/length; so only 15 bytes contains data) number of bytes write;  n is block number in EEPROM
+    static void writechar(const char * name, uint8_t namelen, uint8_t n);
+    static uint8_t readbytes(uint8_t n,uint8_t *buff);
+    static uint8_t readchar(uint8_t n, char *buff);
+    static bool getDeviceState(uint8_t nblock){if(checkBlockNumber(nblock) && nblock <= 30){uint8_t n = nblock;EEPROM.begin(EEPROM_SIZE_T);bool onof = (bool)EEPROM.read(LEN*n-1);EEPROM.end();return onof;}else{return false;}}
+    static void setDeviceState(uint8_t nblock, bool onof){if(nblock >= 1 && nblock <= 30){uint8_t n = nblock;EEPROM.begin(EEPROM_SIZE_T);EEPROM.write(LEN*n-1, onof);EEPROM.end();}}
+};
+void wifieeprom::writebytes(const uint8_t *rawbytes, uint8_t rawbyteslen, uint8_t n){
+  if(checkBlockNumber(n) and checkBlockDataLen(rawbyteslen)){  
         EEPROM.begin(EEPROM_SIZE_T);
         EEPROM.write(LEN*(n-1), rawbyteslen);// LB =16*(n-1); it store count/number of bytes written
-        for(int iadr = LEN*(n-1) + 1, irawbytes = 0; iadr <= LEN*n-1 and irawbytes < rawbyteslen;iadr++,irawbytes++)// UB = (16*n) - 1
+        for(int iadr = LEN*(n-1) + 1, irawbytes = 0; iadr <= (LEN*n-1)-1 and irawbytes < rawbyteslen;iadr++,irawbytes++)// UB = (16*n) - 1
           EEPROM.write(iadr, rawbytes[irawbytes]);
         ////////EEPROM.write(LEN*n-1, onof); // last byte for state
         EEPROM.end();
       }
+}
+void wifieeprom::writechar(const char * name, uint8_t namelen, uint8_t n){//nlen(MAX 14) is number of char in Device Name;  n is block/device number in EEPROM
+  if(checkboundaries(n,namelen)){  
+    EEPROM.begin(EEPROM_SIZE_T);
+    EEPROM.write(LEN*(n-1), namelen);// LB =16*(n-1)
+    for(int iadr = LEN*(n-1) + 1, iname = 0; iadr <= (LEN*n-1)-1 and iname < namelen;iadr++,iname++)// UB = (16*n) - 1
+      EEPROM.write(iadr, (byte)name[iname]);
+    ////////EEPROM.write(LEN*n-1, onof); // last byte for state
+    EEPROM.end();
+  }
+}
+uint8_t wifieeprom::readbytes(uint8_t n,uint8_t *buff){ 
+  uint8_t l = 255;
+  if(checkBlockNumber(n)){ 
+    EEPROM.begin(EEPROM_SIZE_T);
+    l = (uint8_t)EEPROM.read(LEN*(n-1));//LB = LEN*(n-1) first byte of nth block UB = (LEN*n) -1 last byte nth block
+    //Serial.printf("wifi read N = %d\n",l);
+    if(checkBlockDataLen(l)){
+      for(int iadr = LEN*(n-1) + 1, irawbytes = 0; iadr <= (LEN*n-1)-1 and irawbytes < l;iadr++,irawbytes++)
+        buff[irawbytes] = EEPROM.read(iadr);
     }
-    void readbytes(uint8_t n){ 
-      if(checkBlockNumber(n)){ 
-        EEPROM.begin(EEPROM_SIZE_T);
-        len = (uint8_t)EEPROM.read(LEN*(n-1));//LB = LEN*(n-1) first byte of nth block UB = (LEN*n) -1 last byte nth block
-        //Serial.printf("wifi read N = %d\n",len);
-        if(len >= 1 and len <= LEN-1){ // MAX 15 count/number of bytes in blockdata; MIN 1 bytes
-          free(datablock);
-          nblock = n;
-          datablock = (uint8_t*)malloc((len) * sizeof(uint8_t));
-          for(int iadr = LEN*(n-1) + 1, irawbytes = 0; iadr <= LEN*n-1 and irawbytes < len;iadr++,irawbytes++)
-            datablock[irawbytes] = EEPROM.read(iadr);
-        }
-        else{
-          free(datablock);
-          nblock = 0;
-          datablock = NULL;
-          len=0;
-        }
-        EEPROM.end();
-      }
-      ESP.getFreeHeap();
+    EEPROM.end();
+  }
+  if(l <= LEN-2)
+    return l;
+  else
+    return 0;
+}
+uint8_t wifieeprom::readchar(uint8_t n, char *buff){ // Device Name 
+  uint8_t lenn = 255;
+  if(checkBlockNumber(n)){ 
+    EEPROM.begin(EEPROM_SIZE_T);
+    lenn = (uint8_t)EEPROM.read(LEN*(n-1));//LB = LEN*(n-1) first byte of nth block UB = (LEN*16) -1 last byte nth block
+    //Serial.printf("wifi read N = %d\n",lenn);
+    if(checkBlockDataLen(lenn)){ // number of char(MAX 14(LEN-2)) in blockdata
+      for(int iadr = LEN*(n-1) + 1, iname = 0; iadr <= (LEN*n-1)-1 and iname < lenn;iadr++,iname++)
+        buff[iname] = (char)EEPROM.read(iadr);
+      buff[lenn] = '\0';
     }
-    void write(const char * name, uint8_t namelen, uint8_t n){//nlen(MAX 14) is number of char in Device Name;  n is block/device number in EEPROM
-      if(checkboundaries(n,namelen)){  
-        EEPROM.begin(EEPROM_SIZE_T);
-        EEPROM.write(LEN*(n-1), namelen);// LB =16*(n-1)
-        for(int iadr = LEN*(n-1) + 1, iname = 0; iadr <= (LEN*n-1)-1 and iname < namelen;iadr++,iname++)// UB = (16*n) - 1
-          EEPROM.write(iadr, (byte)name[iname]);
-        ////////EEPROM.write(LEN*n-1, onof); // last byte for state
-        EEPROM.end();
-      }
-    }
-    void write(encryp &cryp, uint8_t n){
-      if(checkboundaries(n,cryp.length())){
-        EEPROM.begin(EEPROM_SIZE_T);
-        EEPROM.write(LEN*(n-1), cryp.length());
-        for(int iadr = LEN*(n-1) + 1, iname = 0; iadr <= (LEN*n-1)-1 and iname < cryp.length();iadr++,iname++)//{
-          EEPROM.write(iadr, (byte)cryp.strcharat(iname));
-          //Serial.printf("Char at write encryp \tstr = %c\n",cryp.strcharat(iname)^cryp.keycharat(iname));
-        //}
-        EEPROM.end();
-      }
-      //Serial.printf("Write encrypt string = %s\n",cryp.xor_decrypt());
-    }
-    void read(uint8_t n){ // Device Name 
-      if(checkBlockNumber(n)){ 
-        EEPROM.begin(EEPROM_SIZE_T);
-        len = (uint8_t)EEPROM.read(LEN*(n-1));//LB = LEN*(n-1) first byte of nth block UB = (LEN*16) -1 last byte nth block
-        //Serial.printf("wifi read N = %d\n",len);
-        if(checkBlockDataLen(len)){ // number of char(MAX 14(LEN-2)) in blockdata
-          free(blockdata);
-          nblock = n;
-          blockdata = (char*)malloc((len + 1) * sizeof(char));
-          for(int iadr = LEN*(n-1) + 1, iname = 0; iadr <= (LEN*n-1)-1 and iname < len;iadr++,iname++)
-            blockdata[iname] = (char)EEPROM.read(iadr);
-          blockdata[len] = '\0';
-        }
-        else{
-          free(blockdata);
-          nblock = 0;
-          blockdata = NULL;
-          len=0;
-        }
-        EEPROM.end();
-      }
-      ESP.getFreeHeap();
-    }
-    void read(encryp &cryp, uint8_t n){
-      if(checkBlockNumber(n)){ // MAX DEVICES is 30 = (32 -2) = 512/16 - 2; two blocks for ssid and password
-        EEPROM.begin(EEPROM_SIZE_T);
-        len = (uint8_t)EEPROM.read(LEN*(n-1));//LB = LEN*(n-1) first byte of nth block UB = (LEN*16) -1 last byte nth block
-        //Serial.printf("wifi read N = %d\n",len);
-        if(checkBlockDataLen(len)){ // number of char(MAX 14(LEN-2)) in blockdata
-          free(blockdata);
-          nblock = n;
-          blockdata = (char*)malloc((len + 1) * sizeof(char));
-          for(int iadr = LEN*(n-1) + 1, iname = 0; iadr <= (LEN*n-1)-1 and iname < len;iadr++,iname++)//{
-            blockdata[iname] = cryp.xor_decrypt((char)EEPROM.read(iadr),iname);
-          //}
-          blockdata[len] = '\0';
-          //Serial.printf("Crypt Read = %s\n",blockdata);
-        }
-        else{
-          free(blockdata);
-          nblock = 0;
-          blockdata = NULL;
-          len=0;
-        }
-        EEPROM.end();
-      }
-      ESP.getFreeHeap();
-    }
+    EEPROM.end();
+  }
+  if(lenn <= LEN-2)
+    return lenn;
+  else
+    return 0;
+}
+class encryp {
+  char *key;
   public:
-    wifieeprom() {blockdata = NULL;nblock = 0;len=0;}
-    ~wifieeprom(){free(datablock);free(blockdata);ESP.getFreeHeap();}
-    //String GetSsid(){read(32); return blockdata != NULL ? String(blockdata) : "";}
-    //String GetPass(){read(31); return blockdata != NULL ? String(blockdata) : "";}
-    void clearblockdata(){free(datablock);free(blockdata);ESP.getFreeHeap();datablock = NULL;blockdata = NULL;nblock = 0;len=0;}
-    uint8_t length(uint8_t n){EEPROM.begin(EEPROM_SIZE_T);uint8_t l = (uint8_t)EEPROM.read(LEN*(n-1));EEPROM.end();return l;}
-    bool checkboundaries(uint8_t n,uint8_t l){if((n >= 1 and n <= 32) and (l <= (LEN - 2) and l > 0)){return 1;}else{return 0;}}
-    bool checkBlockNumber(uint8_t n){if(n >= 1 and n <= 32){return true;}else{return false;}}
-    bool checkBlockDataLen(uint8_t l){if(l >= 1 and l <= LEN-2){return true;}else{return false;}}
-    uint8_t GetSsidlen(){return length(32);}
-    uint8_t GetPasslen(){return length(31);}
-    char* GetSsid(){read(32); return blockdata != NULL ? blockdata : NULL;}
-    char* GetSsid(encryp &cryp){read(cryp,32); return blockdata != NULL ? blockdata : NULL;}
-    char* GetPass(){read(31); return blockdata != NULL ? blockdata : NULL;}
-    char* GetPass(encryp &cryp){read(cryp,31); return blockdata != NULL ? blockdata : NULL;}
-
-    void SaveSsid(String s){ write(s.c_str(),(uint8_t)s.length(),32);}
-    void SaveSsid(String s,encryp &cryp){cryp.xor_encrypt(s);write(cryp,32);}
-    void SaveSsid(char *s,uint8_t len){ write(s,len,32);}
-    void SavePass(String s){ write(s.c_str(),(uint8_t)s.length(),31);}
-    void SavePass(String s,encryp &cryp){cryp.xor_encrypt(s);write(cryp,31);}
-    void SavePass(char *s,uint8_t len){ write(s,len,31);}
-    String GetDevice(uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30) {read(blocknum);return blockdata != NULL ? String(blockdata) : "";} else {return "";}}
-    bool SaveDevice(String dev_name, uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30 && dev_name.length() > 0){write(dev_name.c_str(),(uint8_t)dev_name.length(),blocknum); return true;}else{return false;}}
-    bool getDeviceState(uint8_t blocknum){if(checkBlockNumber(blocknum) && blocknum <= 30){uint8_t n = blocknum;EEPROM.begin(EEPROM_SIZE_T);bool onof = (bool)EEPROM.read(LEN*n-1);EEPROM.end();return onof;}else{return false;}}
-    void setDeviceState(uint8_t blocknum, bool onof){if(checkBlockNumber(blocknum) && blocknum <= 30){uint8_t n = blocknum;EEPROM.begin(EEPROM_SIZE_T);EEPROM.write(LEN*n-1, onof);;EEPROM.end();}}
-
-    void saveDavTime(DevTime &dt){
-      if(checkBlockNumber(dt.getnblock())){
-        clearblockdata();
-        len = 1+1+3+3;//week, enabel, on(h,m,s), off
-        nblock = dt.getnblock();
-        datablock = (uint8_t*)malloc((len) * sizeof(uint8_t));
-        datablock[0] = dt.getweek();
-        datablock[1] = (uint8_t)dt.getEnabel();
-        datablock[2] = dt.getonH();
-        datablock[3] = dt.getonM();
-        datablock[4] = dt.getonS();
-        datablock[5] = dt.getofH();
-        datablock[6] = dt.getofM();
-        datablock[7] = dt.getofS();
-        writebytes(datablock,len,nblock);
-        clearblockdata();
-      }
-    }
-    void getDavTime(DevTime &dt){
-      if(checkBlockNumber(dt.getnblock())){
-        readbytes(dt.getnblock());
-        dt.setweek(datablock[0]);
-        dt.setEnabel((bool)datablock[1]);
-        dt.setonH(datablock[2]);
-        dt.setonM(datablock[3]);
-        dt.setonS(datablock[4]);
-        dt.setofH(datablock[5]);
-        dt.setofM(datablock[6]);
-        dt.setofS(datablock[7]);
-        clearblockdata();
-      }
-    }
+    encryp();
+    ~encryp(){free(key);ESP.getFreeHeap();}//free(str);free(dstr);}
+    char xor_encrypt(char c, uint8_t at_i_key){return c^key[at_i_key];}
+    char xor_decrypt(char encrypted_c, uint8_t at_i_key){return encrypted_c^key[at_i_key];}
+    bool xor_encrypt(char *s, uint8_t l);// char *s is plain text
+    bool xor_decrypt(char *crypted, uint8_t l);
+    String Key(){return String(key);}
 };
+encryp::encryp(){
+  //len = 0;
+  //str = NULL;
+  //dstr = NULL;
+  key= (char *)malloc((KEYLEN+1)*sizeof(char)); // one for null char
+  String m = WiFi.macAddress();
+  char tmp[7];
+  itoa(ESP.getChipId(),tmp,16);
+  key[0] = tmp[0];
+  key[1] = tmp[1];
+  uint8_t ik = 2;
+  for(uint8_t i = 0; i < m.length() && ik < (2 + 12); i++){
+    if(m.charAt(i) != ':'){
+      key[ik] = m.charAt(i);
+      ik++;
+    }
+  }
+  key[14] = tmp[2];
+  key[15] = tmp[3];
+  //free(tmp);
+  key[KEYLEN] = '\0';
+  ESP.getFreeHeap();
+}
+bool encryp::xor_encrypt(char *s, uint8_t len){
+  if(s != NULL && len <= KEYLEN && len > 0){
+    ////str = (char *)malloc(len*sizeof(char));
+    //Serial.printf("Length %d\n",len);
+    for(uint8_t i = 0; i < len; i++){
+      s[i] = xor_encrypt(s[i],i);
+    }
+    //Serial.printf("len %d\n",len);
+    return true;
+  }
+  else
+    return false;
+}
+bool encryp::xor_decrypt(char *crypted, uint8_t len){// member *crypted will be decrypted by this fn, so do not call clear()
+  if(crypted != NULL and len <= KEYLEN && len > 0){
+    //free(dstr);ESP.getFreeHeap();
+    //dstr = (char *)malloc((len + 1)*sizeof(char));
+    for(uint8_t i = 0; i < len; i++){
+      crypted[i] = xor_decrypt(crypted[i],i);
+    }
+    //dstr[len] = '\0';
+    //Serial.printf("string =%s;len =%d\n",dstr,len);
+    //Serial.println(String(dstr));
+    return true;
+  }
+  else
+    return false;
+}
 class DevPinOut{
-  uint8_t p;
-  String name; uint8_t nblock; // Devices Name(AlphaNumeric) given in Alexa
-  bool onof;
-  
-  void Pin(uint8_t p){if(isValidPin(p)){this->p = p;}}
   public:
-    static const uint8_t D5_GPIO14 = 14;
-    static const uint8_t D6_GPIO12 = 12;
-    static const uint8_t D7_GPIO13 = 13;
-    // pins sutable for output only
-    static const uint8_t D3_GPIO0 = 0;
-    static const uint8_t D4_GPIO2 = 2;
-    DevTime dt;
-    DevPinOut():dt(){p=255; name=""; onof=0;nblock=0;}
-    //DevPinOut(uint8_t p){this->p=p; this->name=""; this->onof=0;pinMode(p, OUTPUT);digitalWrite(p, LOW);}
-    //DevPinOut(uint8_t p,String name){this->p=p; this->name=name; this->onof=0;pinMode(p, OUTPUT);digitalWrite(p, LOW);}
-    ~DevPinOut(){}
-    bool isValidPin(){return isValidPin(this->p);}
-    bool isValidPin(uint8_t p){if(D3_GPIO0 == p || D4_GPIO2 == p || D5_GPIO14 == p || D6_GPIO12 == p || D7_GPIO13 == p){return 1;}else{return 0;}}
-    //void init(uint8_t p){Pin(p); this->name=""; this->onof=0;pinMode(p, OUTPUT);digitalWrite(p, LOW);}
-    bool init(uint8_t p,String name,bool onof,uint8_t nblock,uint8_t DevTimenblock){
-      if(!setname(name)){return 0;}
-      if(!isValidPin(p)){return 0;}
-      Pin(p); 
-      this->name=name; 
-      this->onof=onof;
-      this->nblock=nblock;
-      pinMode(p, OUTPUT);
-      if(onof)
-        on();
-      else
-        off();
-      dt.setnblock(DevTimenblock);
-      return true;
-    }
-    bool on(){
-      if(!onof){
-        digitalWrite(p, HIGH);
-        onof=1;
-        wifieeprom saveonof;
-        saveonof.setDeviceState(nblock, onof);
-      }
-      return onof;
-      }
-    bool off(){
-      if(onof){
-        digitalWrite(p, LOW);
-        onof=0;
-        wifieeprom saveonof;
-        saveonof.setDeviceState(nblock, onof);
-      }
-      return onof;
-    }
-    bool setname(String name){
-      if(name.length() <= 0) {return 0;}
-      for(uint8_t i = 0; i < name.length(); i++)
-        if(!isAlphaNumeric(name.charAt(i)))
-          return 0;
-      this->name=name;
-      return 1;
-    }
-    String getDevicename(){return name;}
-    uint8_t getDeviceNum(){return nblock;}
-    uint8_t getPinNum(){return p;}
-    bool getStateonof(){return onof;}
+    static bool getDevName(char *dev_name,uint8_t devno_nblock,bool &presentState){presentState=wifieeprom::getDeviceState(devno_nblock);return wifieeprom::readchar(devno_nblock, dev_name) != 0 ? true : false;}
+    static void saveDevName(String dev_name,uint8_t devno_nblock){wifieeprom::writechar(dev_name.c_str(),dev_name.length(), devno_nblock);wifieeprom::setDeviceState(devno_nblock, true);}
+    static void PinOutPutMode(uint8_t p){pinMode(p, OUTPUT);}
+    static void On(uint8_t p,uint8_t nblock, bool &presentState);
+    static void Off(uint8_t p,uint8_t nblock, bool &presentState);
 };
-class DevPinOuts{
-  public:
-    const static uint8_t MAX = 4;
-    DevPinOut devs[MAX]; 
-    DevPinOuts(){
-      wifieeprom fetchdev;
-      devs[0].init(DevPinOut::D3_GPIO0,fetchdev.GetDevice(1),fetchdev.getDeviceState(1),1,MAX+1);
-      devs[1].init(DevPinOut::D4_GPIO2,fetchdev.GetDevice(2),fetchdev.getDeviceState(2),2,MAX+2);
-      devs[2].init(DevPinOut::D5_GPIO14,fetchdev.GetDevice(3),fetchdev.getDeviceState(3),3,MAX+3);
-      devs[3].init(DevPinOut::D6_GPIO12,fetchdev.GetDevice(4),fetchdev.getDeviceState(4),4,MAX+4);
-      fetchdev.getDavTime(devs[0].dt);
-      fetchdev.getDavTime(devs[1].dt);
-      fetchdev.getDavTime(devs[2].dt);
-      fetchdev.getDavTime(devs[3].dt);
-    }
-    ~DevPinOuts(){}
-    void devtoggal(const char * device_name, bool state){
-      for(uint8_t i = 0; i < MAX; i++){
-        if(strcmp(device_name,devs[i].getDevicename().c_str()))
-          if(state)
-            devs[i].on();
-          else
-            devs[i].off();
-      }
-    }
-};
-DevPinOuts pnos;
+void DevPinOut::On(uint8_t p,uint8_t nblock, bool &presentState){
+  if(!presentState){
+    digitalWrite(p, HIGH);
+    presentState = true;
+    wifieeprom::setDeviceState(nblock, true);
+  }
+}
+void DevPinOut::Off(uint8_t p,uint8_t nblock, bool &presentState){
+  if(presentState){
+    digitalWrite(p, LOW);
+    presentState = false;
+    wifieeprom::setDeviceState(nblock, false);
+  }
+}
 class encrpeeprom{
   public:
     encryp cryp;
-    wifieeprom rom;
-    encrpeeprom():cryp(),rom(){}
-    void savessid(String s){
+    //wifieeprom rom;
+    encrpeeprom():cryp(){}
+    void savessidpass(uint8_t sid_pass_nblock, String s){
       //Serial.printf("encrpeeprom SSID = %s\n",s);
-      rom.SaveSsid(s,cryp);
+      char sid_pas[s.length()];
+      for(uint8_t i = 0; i < s.length();i++)
+        sid_pas[i] = s.charAt(i);
+      cryp.xor_encrypt(sid_pas,s.length());
+      wifieeprom::writechar(sid_pas, s.length(), sid_pass_nblock);
     }
-    void savepass(String s){rom.SavePass(s,cryp);}
-    String getssid(){return String(rom.GetSsid(cryp));}
-    String getpass(){return String(rom.GetPass(cryp));}
+    void savessid(String s){savessidpass(32,s);}
+    void savepass(String s){savessidpass(31,s);}
+    String getssidpass(uint8_t sid_pass_nblock){
+      char buff[14+1];
+      uint8_t len = wifieeprom::readchar(sid_pass_nblock, buff);
+      if(len != 0){
+        cryp.xor_decrypt(buff,len);
+        buff[len] = '\0';
+        return String(buff);
+      }
+      return "";
+    }
+    String getssid(){return getssidpass(32);}
+    String getpass(){return getssidpass(31);}
+    // void readDevname(char *dev_name,uint8_t devno_nblock){
+    //   uint8_t len = wifieeprom::readchar(devno_nblock, dev_name);
+    //   Serial.printf("Device name in eeprom is : %s\n", dev_name);
+    // }
+    // void AllDevNames(){
+    //   readDevname(D_5,D5_GPIO14block);
+    //   readDevname(D_6,D6_GPIO12block);
+    //   //readDevname(D_3,D3_GPIO0block);
+    //   //readDevname(D_4,D4_GPIO2block);
+    // }
 };
 class ds1307rtc{
-  RTC_DS1307 RTC;
   uint8_t uday; // day of ntp time from internet and adjusted RTC
   public:
+    RTC_DS1307 RTC;
     ds1307rtc(){
     }
     void initRTC(){
@@ -646,6 +443,147 @@ class ds1307rtc{
       Serial.println();
     } 
 };
+class DevTime{
+  // Time Schedule
+  //uint8_t week; // 00000000(0)(None) 00000001(1)(Mon) 00000010(2)(Tus) 00000100(4)(Wed) 00001000(8)(Thr) 00010000(16)(Fri) 00100000(32)(Sat) 01000000(64)(Sun) 10000000(128)(All)
+  //uint8_t on_h,on_m,on_s;
+  //uint8_t of_h,of_m,of_s;
+  //uint8_t nblock;
+  bool isweekofday(uint8_t weekofday);
+  bool _midnighttosunrise(ds1307rtc & rtc);
+  bool is_bulbturn_day(ds1307rtc & rtc);
+  public:
+    DevTime(uint8_t nblock){this->nblock = nblock;}
+    uint8_t nblock;
+    uint8_t week_on_of[7];// week 0 
+    //on_h 1,on_m 2,on_s 3, on in evening eg. 20H:30M
+    //of_h 4,of_m 5,of_s 6;  off in morning 07H:30M
+    bool enable; // ON OFF time schedule for pin is enable/disable
+    void reset(){
+      week_on_of[0] = ALLDAYS;
+      week_on_of[1] = 20; // H
+      week_on_of[2] = 30; // M
+      week_on_of[3] = 0; // S
+      week_on_of[4] = 7; // H
+      week_on_of[5] = 30; // M
+      week_on_of[6] = 0; // S
+      enable = 1;
+      save();
+    }
+    void setDay(uint8_t set){week_on_of[0] = week_on_of[0] | set;}// to set Monday setDay(MON); to unset Monday
+    void unsetDay(uint8_t unset){week_on_of[0] = week_on_of[0] & unset;}// to unset Monday setDay(UNMON);
+    bool isday(uint8_t day){return week_on_of[0] & day ? 1 : 0;} //to check isDay(MON)
+    
+    void ONOFF(ds1307rtc & rtc, uint8_t p, bool &presentState);
+    
+    // bool isMon(){return week_on_of[0] & (uint8_t)1u ? 1 : 0;}
+    // bool isTus(){return week_on_of[0] & (uint8_t)2u ? 1 : 0;}
+    // bool isWed(){return week_on_of[0] & (uint8_t)4u ? 1 : 0;}
+    // bool isThr(){return week_on_of[0] & (uint8_t)8u ? 1 : 0;}
+    // bool isFri(){return week_on_of[0] & (uint8_t)16u ? 1 : 0;}
+    // bool isSat(){return week_on_of[0] & (uint8_t)32u ? 1 : 0;}
+    // bool isSun(){return week_on_of[0] & (uint8_t)64u ? 1 : 0;}
+    // bool isAll(){return week_on_of[0] & (uint8_t)128u ? 1 : 0;}
+    // bool isNone(){return week_on_of[0] ? 1 : 0;}
+
+    void save();
+    void get();
+    String print();
+};
+void DevTime::ONOFF(ds1307rtc & rtc, uint8_t p, bool &presentState){
+  uint8_t h = rtc.RTC.now().hour();
+  uint8_t m = rtc.RTC.now().minute();
+      //uint8_t ofh = week_on_of[4]; // 07H:30M
+      //uint8_t ofm = week_on_of[5];
+  if(!is_bulbturn_day(rtc))
+    DevPinOut::Off(p,nblock,presentState);
+  else{
+    if(h < week_on_of[4])
+      DevPinOut::On(p,nblock,presentState);
+    else 
+      if(h == week_on_of[4]) // 07H:30M morning off
+        if(m < week_on_of[5])
+          DevPinOut::On(p,nblock,presentState); 
+        else
+          DevPinOut::Off(p,nblock,presentState);
+      else //if(h > week_on_of[4]){ // 07H
+        if(h < week_on_of[1]) // 20H on
+          DevPinOut::Off(p,nblock,presentState);
+        else 
+          if(h == week_on_of[1]) // 20H
+            if(m < week_on_of[2]) //30M
+              DevPinOut::Off(p,nblock,presentState);
+            else
+              DevPinOut::On(p,nblock,presentState);
+          else //if(h > week_on_of[1]){
+            DevPinOut::On(p,nblock,presentState);
+  }
+}
+void DevTime::save(){
+  wifieeprom::setDeviceState(nblock,enable);
+  wifieeprom::writebytes(week_on_of, 7, nblock);
+}
+void DevTime::get(){
+  enable = wifieeprom::getDeviceState(nblock);
+  wifieeprom::readbytes(nblock,week_on_of);
+}
+bool DevTime::is_bulbturn_day(ds1307rtc & rtc){
+  uint8_t day = rtc.RTC.now().dayOfWeek();
+  if(_midnighttosunrise(rtc))
+    if(day == 0)
+      return isweekofday(6);
+    else
+      return isweekofday(day - 1);
+  else
+    return isweekofday(day);
+}
+bool DevTime::_midnighttosunrise(ds1307rtc & rtc){
+  uint8_t h = rtc.RTC.now().hour();
+  uint8_t m = rtc.RTC.now().minute();
+  if(h <= week_on_of[4])
+    if(h == week_on_of[4])
+      if(m < week_on_of[5])
+        return true;
+      else
+        return false;
+    else
+      return true;
+  else
+    return false;
+}
+bool DevTime::isweekofday(uint8_t weekofday){
+  if(weekofday == 0) {return isday(MON);}
+  else if (weekofday == 1) {return isday(TUS);}
+  else if (weekofday == 2) {return isday(WED);}
+  else if (weekofday == 3) {return isday(THU);}
+  else if (weekofday == 4) {return isday(FRI);}
+  else if (weekofday == 5) {return isday(SAT);}
+  else if (weekofday == 6) {return isday(SUN);}
+  else {return 0;}
+}
+String DevTime::print(){
+  //MTWTFSS
+  char s[27];
+  uint8_t i = 0;
+  if(isday(MON)){s[i] = 'M';i++;}
+  if(isday(TUS)){s[i] = 'T';i++;}
+  if(isday(WED)){s[i] = 'W';i++;}
+  if(isday(THU)){s[i] = 'T';i++;}
+  if(isday(FRI)){s[i] = 'F';i++;}
+  if(isday(SAT)){s[i] = 'S';i++;}
+  if(isday(SUN)){s[i] = 'S';i++;}
+  for(uint8_t z = 1; z <= 6; z++){
+    sprintf(&s[i],"%2d:",week_on_of[z]);
+    i = i + 3 + 1;
+  }
+  sprintf(&s[i],"%1d",enable);
+  i = i + 1;
+  s[i] = '\0';
+  Serial.printf("DevTime = %s",s);
+  return String(s);
+}
+ds1307rtc d1307rtc;
+DevTime tD5(MAX_DEVS + 1), tD6(MAX_DEVS + 2), tD3(MAX_DEVS + 3), tD4(MAX_DEVS + 4);
 
 void ISRwatchdog() {
   watchdogCount++;
@@ -676,10 +614,17 @@ void setupfauxmo() {
     // Add virtual devices
     //fauxmo.addDevice(dev1.c_str());
     //fauxmo.addDevice(dev2.c_str());
-    for(uint8_t i = 0; i < DevPinOuts::MAX; i++)
-      if(pnos.devs[i].getDeviceNum() > 0 && pnos.devs[i].getDevicename().length() > 0)
-        fauxmo.addDevice(pnos.devs[i].getDevicename().c_str());
-
+    // for(uint8_t i = 0; i < MAX_DEVS; i++)
+    //   if(pnos.devs[i].getDeviceNum() > 0 && pnos.devs[i].getDevicename().length() > 0)
+    //     fauxmo.addDevice(pnos.devs[i].getDevicename().c_str());
+    fauxmo.addDevice(D_5);
+    Serial.printf("Device D_5 in fauxmo : %s\n", D_5);
+    fauxmo.addDevice(D_6);
+    Serial.printf("Device D_6 in fauxmo : %s\n", D_6);
+    // fauxmo.addDevice(D_5.getDevicename().c_str());
+    // fauxmo.addDevice(D_6.getDevicename().c_str());
+    //fauxmo.addDevice(D_3.getDevicename().c_str());
+    //fauxmo.addDevice(D_4.getDevicename().c_str());
     //fauxmo.addDevice(pnos.devs[1].getname().c_str());
     // fauxmo.addDevice(ID_BLUE);
     // fauxmo.addDevice(ID_PINK);
@@ -697,7 +642,19 @@ void setupfauxmo() {
 
         // Checking for device_id is simpler if you are certain about the order they are loaded and it does not change.
         // Otherwise comparing the device_name is safer.
-        pnos.devtoggal(device_name,state);
+        if (strcmp(device_name, D_5)==0) {
+          digitalWrite(D5_GPIO14, state ? HIGH : LOW);
+          wifieeprom::setDeviceState(D5_GPIO14block, state);//EEPROM.begin(EEPROM_SIZE_T);EEPROM.write(LEN*D5_GPIO14block-1, state);EEPROM.end();
+          return;
+          }
+        if (strcmp(device_name, D_6)==0) {
+          digitalWrite(D6_GPIO12, state ? HIGH : LOW);
+          wifieeprom::setDeviceState(D6_GPIO12block, state);//EEPROM.begin(EEPROM_SIZE_T);EEPROM.write(LEN*D6_GPIO12block-1, state);EEPROM.end();
+          return;
+        }
+        //if (strcmp(device_name, D_6.getDevicename().c_str())==0) {D_6.toggal(state);return;}
+        //if (strcmp(device_name, D_3.getDevicename().c_str())==0) {D_3.toggal(state);return;}
+        //if (strcmp(device_name, D_4.getDevicename().c_str())==0) {D_4.toggal(state);return;}
         // if (strcmp(device_name, dev1.c_str())==0) {
         //     digitalWrite(D1_GPIO5, state ? HIGH : LOW);
         // } else if (strcmp(device_name, dev2.c_str())==0) {
@@ -712,7 +669,6 @@ void setupfauxmo() {
         //}
 
     });
-
 }
 void defWebPage(){
   if(server.args() == 0)
@@ -740,50 +696,126 @@ void defWebPage(){
 void PageDeviesName(){
   if(server.args() == 0)
     server.send(200, "text/html", String(header_html) + String(devices_body_html));
-  else
-  { // Write ssid and paswd to eeprom
-    if(server.argName(0) == "div1" && server.argName(1) == "div2"){
-      //Serial.printf("server.arg(0) = %s; server.arg(1) = %s\n", server.arg(0),server.arg(1));
-      wifieeprom wp;
-      String newdev1(server.arg(0)), newdev2(server.arg(1));
-      wp.SaveDevice(newdev1, 1);
-      wp.SaveDevice(newdev2, 2);
-      server.send(200, "text/html", "<!DOCTYPE html><html><head></head><body>Done:" + wp.GetDevice(1) + ":" + wp.GetDevice(2) + "</body></html>");
-      delay(100);
-      ESP.restart();
+  else{ // Write ssid and paswd to eeprom
+    wifieeprom wp;
+    if(server.argName(0) == "div1"){
+      String newdev1(server.arg(0));
+      wp.writechar(newdev1.c_str(), newdev1.length(), D5_GPIO14block);
+      wp.readchar(D5_GPIO14block, D_5);
     }
-    else
-      server.send(200, "text/html", String(header_html) + String(sidpas_body_html));
+    if(server.argName(1) == "div2"){
+      //Serial.printf("server.arg(0) = %s; server.arg(1) = %s\n", server.arg(0),server.arg(1));
+      String newdev2(server.arg(1));
+      wp.writechar(newdev2.c_str(), newdev2.length(), D6_GPIO12block);
+      wp.readchar(D6_GPIO12block, D_6);
+    }
+    if(server.argName(2) == "div3"){
+      //Serial.printf("server.arg(0) = %s; server.arg(1) = %s\n", server.arg(0),server.arg(1));
+      String newdev3(server.arg(2));
+      wp.writechar(newdev3.c_str(), newdev3.length(), D3_GPIO0block);
+      wp.readchar(D3_GPIO0block, D_3);
+    }
+    if(server.argName(3) == "div4"){
+      //Serial.printf("server.arg(0) = %s; server.arg(1) = %s\n", server.arg(0),server.arg(1));
+      String newdev4(server.arg(3));
+      wp.writechar(newdev4.c_str(), newdev4.length(), D4_GPIO2block);
+      wp.readchar(D4_GPIO2block, D_4);
+    }
+  }
+  if(server.args() > 3)
+    server.send(200, "text/html", String(header_html) + String(sidpas_body_html));
+  else{
+    server.send(200, "text/html", "<!DOCTYPE html><html><head></head><body>Done:" + String(D_5) + ":" + String(D_6) + ":" + String(D_3) + ":" + String(D_4)+ "</body></html>");
+    delay(100);
+    ESP.restart();
   }
   ESP.getFreeHeap();
 }
-ds1307rtc d1307rtc;
+void weekpage(){
+  if(server.args() == 0)
+    server.send(200, "text/html", String(header_html) + String(week_body_html));
+  else{ // Write ssid and paswd to eeprom
+        uint8_t week = 0x00;
+        if(server.argName(1) == "0"){
+            String MoN(server.arg(1));
+            if(MoN == "Mon"){week = week | MON;}
+        }
+        String TuE(server.arg(2));
+        if(TuE == "Tue"){week = week | TUS;}
+        String WeD(server.arg(3));
+        if(WeD == "Wed"){week = week | WED;}
+        String ThU(server.arg(4));
+        if(ThU == "Thu"){week = week | THU;}
+        String FrI(server.arg(5));
+        if(FrI == "Fri"){week = week | FRI;}
+        String SaT(server.arg(6));
+        if(SaT == "Sat"){week = week | SAT;}
+        String SuN(server.arg(7));
+        if(SuN == "Sun"){week = week | SUN;}
+        if(server.argName(0) == "dn"){
+          String dev(server.arg(0));
+          if(dev == "1"){tD5.get(); tD5.week_on_of[0] = week; tD5.save();}
+          if(dev == "2"){tD6.get(); tD6.week_on_of[0] = week; tD6.save();}
+          if(dev == "3"){tD3.get(); tD3.week_on_of[0] = week; tD3.save();}
+          if(dev == "4"){tD4.get(); tD4.week_on_of[0] = week; tD4.save();}
+        }
+      }
+}
+
+void resetDevs(){
+  DevPinOut::saveDevName("Device1", D5_GPIO14block);
+  DevPinOut::saveDevName("Device2", D6_GPIO12block);
+  DevPinOut::saveDevName("Device3", D3_GPIO0block);
+  DevPinOut::saveDevName("Device4", D4_GPIO2block);
+  tD5.reset(); // nblock
+  tD6.reset();
+  tD3.reset(); 
+  tD4.reset();
+}
+void statusDevs(){
+
+}
+// void setup(){
+//   resetDevs();
+// }
+// void loop(){}
 void setup(){
   // Init serial port and clean garbage
   Serial.begin(SERIAL_BAUDRATE);
   secondTick.attach(1, ISRwatchdog);
   Serial.println();
   Serial.println();
-  d1307rtc.initRTC();
-  d1307rtc.printRTC();
+  //resetDevs();
+  // read devices names from eeprom
+  DevPinOut::getDevName(D_5,D5_GPIO14block,D5onof);
+  DevPinOut::getDevName(D_6,D6_GPIO12block,D6onof);
+  DevPinOut::getDevName(D_3,D3_GPIO0block,D3onof);
+  DevPinOut::getDevName(D_4,D4_GPIO2block,D4onof);
+  tD5.get();
+  tD6.get();
+  tD3.get();
+  tD4.get();
+  tD5.print();
+  tD6.print();
+  tD3.print();
+  tD4.print();
+  // setup Pin Modes to OUTPUT
+  DevPinOut::PinOutPutMode(D5_GPIO14);
+  DevPinOut::PinOutPutMode(D6_GPIO12);
+  DevPinOut::PinOutPutMode(D3_GPIO0);
+  DevPinOut::PinOutPutMode(D4_GPIO2);
+  //d1307rtc.initRTC();
+  //d1307rtc.printRTC();
   
   Serial.println();
+  encrpeeprom cryprom;
+  Serial.println(cryprom.cryp.Key());
+  //cryprom.savepass("99719897722");
+  Serial.printf("ssid : %s; paswd : %s\n",cryprom.getssid(),cryprom.getpass());
   
   // Wifi
   // Set WIFI module to STA mode
   WiFi.mode(WIFI_STA);
-
-  encrpeeprom cryprom;
-  Serial.println(cryprom.cryp.Key());
-  //cryprom.savepass("9971989772");
-  Serial.printf("ssid : %s; paswd : %s\n",cryprom.getssid(),cryprom.getpass());
-
-  // pnos.setDeviceName(0, cryprom.rom.GetDevice(0));
-  // pnos.setDeviceName(1, cryprom.rom.GetDevice(1));
-  //dev1 = cryprom.rom.GetDevice(0);
-  //dev2 = cryprom.rom.GetDevice(1);
-  Serial.printf("Device 1 eeprom is : %s\n", pnos.devs[0].getDevicename());
-  Serial.printf("Device 2 eeprom is : %s\n", pnos.devs[1].getDevicename());
 
   Serial.printf("getSketchSize : %d\n", ESP.getSketchSize());
   Serial.printf("getFreeSketchSpace : %d\n", ESP.getFreeSketchSpace());
@@ -792,8 +824,6 @@ void setup(){
   Serial.printf("getFlashChipSize : %d\n", ESP.getFlashChipSize());
   // Connect
   WiFi.begin(cryprom.getssid(),cryprom.getpass());
-  
-  
   // Wait
   while (WiFi.status() != WL_CONNECTED) {
       Serial.print(".");
@@ -817,6 +847,7 @@ void setup(){
     // Route for root / web page
     server.on("/wifi",defWebPage);
     server.on("/devices",PageDeviesName);
+    server.on("/week",weekpage);
     server.begin();
     Serial.println();
     Serial.println("HTTP server started");
@@ -831,6 +862,7 @@ void setup(){
     setupfauxmo();
   }
 }
+//void loop() {}
 void loop() {
   // Feeding the dog
   watchdogCount = 0;
